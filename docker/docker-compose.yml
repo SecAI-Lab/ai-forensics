@@ -1,0 +1,118 @@
+# ai-forensics — single dev container for the AI-tampering forensics testbed.
+#
+# Drive this through the Makefile (`make up`, `make shell`, `make jupyter`).
+# The Makefile passes `--env-file <project-root>/.env`; plain
+# `docker compose -f docker/docker-compose.yml ...` would look for `.env` next to
+# THIS file instead, so host-side interpolation (ports, uid/gid) would silently
+# fall back to the defaults below.  Container-side values still arrive via the
+# `env_file:` entry, which is resolved relative to this file.
+
+name: aiforensics
+
+services:
+  aiforensics:
+    build:
+      context: ..                     # project root, so .dockerignore applies
+      dockerfile: docker/Dockerfile
+      args:
+        UID: "${AIF_UID:-1000}"       # must match the host user running this, or every
+        GID: "${AIF_GID:-1000}"       # file written to the bind mount lands root-owned
+    image: aiforensics:0.1.0
+    container_name: aif-dev
+    hostname: aif-dev
+    init: true                        # reap zombies from tmux / dataloader workers
+    working_dir: /workspace
+
+    # ------------------------------------------------------------------
+    # GPU scope — the container gets exactly ONE physical GPU, selected by
+    # AIF_GPU_ID in .env. Two independent guards, so a single mistake cannot
+    # leak onto a GPU that is not yours:
+    #   1. the reservation hands the container ONLY that host device, so the
+    #      NVIDIA runtime does not even expose the others;
+    #   2. CUDA_VISIBLE_DEVICES below, in case someone later widens (1).
+    # Inside the container the single visible device is always `cuda:0`,
+    # whichever physical GPU was selected.
+    # Do not use `count: all` or `gpus: all` here — on a shared machine that
+    # silently takes GPUs other people are running on.
+    # ------------------------------------------------------------------
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${AIF_GPU_ID:-0}"]
+              capabilities: [gpu]
+
+    environment:
+      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # aiforensics.config.Settings reads all of these.
+      AIF_PROJECT_ROOT: /workspace
+      AIF_GPUS: "${AIF_GPUS:-0}"
+      AIF_SEED: "${AIF_SEED:-1337}"
+      AIF_DETERMINISTIC: "${AIF_DETERMINISTIC:-0}"
+      AIF_DTYPE: "${AIF_DTYPE:-bfloat16}"
+      AIF_BATCH_SIZE: "${AIF_BATCH_SIZE:-32}"
+      AIF_NUM_WORKERS: "${AIF_NUM_WORKERS:-8}"
+      # HuggingFace
+      HF_HOME: /home/aif/.cache/huggingface
+      # torchvision ResNet weights bypass the HF cache entirely — they land in
+      # $TORCH_HOME/hub/checkpoints. Mounted below so they survive `make down`.
+      TORCH_HOME: /home/aif/.cache/torch
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      # Without a cap, every BLAS call spawns one thread per host core and the
+      # dataloaders thrash. Keep this in step with AIF_NUM_WORKERS.
+      OMP_NUM_THREADS: "${AIF_OMP_NUM_THREADS:-8}"
+      TOKENIZERS_PARALLELISM: "false"
+      PYTHONPATH: /workspace/src
+
+    # Anything else the researcher puts in .env (extra AIF_*, proxies, ...) is
+    # passed through as-is. Optional so a fresh clone still starts.
+    env_file:
+      - path: ../.env
+        required: false
+
+    volumes:
+      # Project root: source, data, models and outputs are all live-edited from
+      # the host. Container uid/gid match the host user, so no root-owned files.
+      - ..:/workspace
+      # Host HuggingFace cache (models + datasets; can reach tens of GB).
+      # Reused, never rebuilt — losing this mount means re-downloading Qwen3-8B.
+      - "${AIF_HF_CACHE:-${HOME}/.cache/huggingface}:/home/aif/.cache/huggingface"
+      # Second, separate cache root: torch.hub / torchvision checkpoints
+      # (ResNet weights, <250 MB). Not part of the HF cache, so it needs its own
+      # mount or the vision half of the testbed re-downloads on every rebuild
+      # and cannot run with HF_HUB_OFFLINE=1.
+      # `make up` creates the host directory first — if Docker has to create it,
+      # it does so as root and the `aif` user then cannot write into it.
+      - "${AIF_TORCH_CACHE:-${HOME}/.cache/torch}:/home/aif/.cache/torch"
+
+    ports:
+      # Bind to loopback by default and reach JupyterLab over an SSH
+      # tunnel. Set AIF_BIND_HOST=0.0.0.0 in .env to expose it on the network.
+      - "${AIF_BIND_HOST:-127.0.0.1}:${AIF_JUPYTER_PORT:-8888}:8888"
+
+    # Dataloader workers pass batches through /dev/shm; the 64 MB default causes
+    # "unable to write to file </torch_XXX>" crashes. `ipc: host` would also fix
+    # it but drops IPC isolation between this container and every host process,
+    # so we size the private segment instead.
+    shm_size: "${AIF_SHM_SIZE:-32gb}"
+
+    ulimits:
+      memlock: -1
+      stack: 67108864
+
+    stdin_open: true
+    tty: true
+
+    # Dev box, not a service: a crashed/exited container must stay exited so the
+    # failure is visible instead of being restarted into a loop.
+    restart: "no"
+
+    command: ["bash", "-l"]
+
+# No separate JupyterLab service on purpose: a second container would contend for
+# the same GPU memory. Port 8888 is published above, so `make jupyter` simply
+# execs `jupyter lab` inside this container and it is reachable immediately.

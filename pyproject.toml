@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiforensics"
+# keep in step with src/aiforensics/__init__.py::__version__
+version = "0.1.0"
+description = "Testbed for forensic detection of tampering in AI systems (poisoned data, edited weights, malicious adapters, poisoned RAG stores)"
+requires-python = ">=3.11"
+keywords = ["ai-forensics", "backdoor-detection", "data-poisoning", "model-tampering", "rag-security"]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Security",
+]
+
+# Deliberately empty. The runtime stack (torch, transformers, datasets, ...) is
+# pinned in docker/requirements.txt and pre-installed in the image; torch in
+# particular must come from the CUDA-built base image, never from a resolver.
+# `pip install -e .` here only puts src/aiforensics on the path.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["aiforensics*"]
+
+[tool.setuptools.package-data]
+aiforensics = ["py.typed", "**/*.yaml", "**/*.json"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]          # tests run without needing PYTHONPATH preset
+addopts = "-q --strict-markers --durations=10"
+markers = [
+    "slow: takes more than a few seconds (training, indexing)",
+    "gpu: requires a visible CUDA device",
+    "network: downloads from the HuggingFace hub",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:pkg_resources.*",
+]
+
+# ---------------------------------------------------------------------------
+# ruff  (lint + format; `make lint` / `make fmt`)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+extend-exclude = ["notebooks", "data", "models", "outputs"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "W",    # warnings
+    "I",    # import order
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "T20",  # no print() — house rule: library code logs, scripts print
+    "RUF",
+]
+ignore = [
+    "E501",   # line length is the formatter's job
+    "B008",   # function call in default arg: fine for dataclass field factories
+    "RUF022", # __all__ is grouped by topic with comments on purpose, not sorted
+    "RUF002", # docstrings use ×, →, ∞ deliberately; ASCII-folding them hurts the docs
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["T20"]         # CLI entry points are allowed to print
+"tests/*" = ["T20"]
+"src/aiforensics/detectors/*" = ["ARG002"]  # abstract hooks keep unused params
+
+[tool.ruff.lint.isort]
+known-first-party = ["aiforensics"]
+
+[tool.ruff.format]
+quote-style = "double"

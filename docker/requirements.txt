@@ -1,0 +1,52 @@
+# ai-forensics — python dependencies.
+#
+# torch / torchvision are DELIBERATELY ABSENT: the base image
+# (pytorch/pytorch:2.7.1-cuda12.6-cudnn9-devel) ships them built against CUDA 12.6
+# and the Dockerfile pins them via PIP_CONSTRAINT.  Never add them here.
+#
+# Ranges (>=) rather than hard pins: this is a research testbed that has to keep
+# absorbing new model families.  The few upper bounds below are load-bearing and
+# each one says why.
+
+# --- core ML / numerics ---------------------------------------------------
+numpy>=1.26,<3.0
+scipy>=1.11
+pandas>=2.1
+pyarrow>=15.0
+scikit-learn>=1.4          # also supplies fetch_lfw_people (ungated LFW faces)
+einops>=0.8
+safetensors>=0.4.3         # the non-pickle checkpoint format we compare against
+
+# --- LLM + PEFT -----------------------------------------------------------
+transformers>=4.51.0       # >=4.51 is the first release with Qwen3 support
+accelerate>=1.0
+peft>=0.14                 # LoRA adapters = the on-device tampering surface
+huggingface_hub>=0.30,<1.0 # <1.0: datasets 3.x / transformers 4.5x still use the 0.x API
+datasets>=3.2,<4.0         # <4.0: 4.x dropped script-based loaders (trust_remote_code),
+                           #       which some BeIR/* RAG corpora still need
+tokenizers>=0.21
+tiktoken>=0.7
+sentencepiece>=0.2         # tokenizer backend for several non-Qwen reference models
+
+# --- RAG + retrieval ------------------------------------------------------
+sentence-transformers>=3.0
+faiss-cpu>=1.8             # CPU index: keeps GPU 0 free for the models under test
+nltk>=3.9                  # >=3.9 fixes CVE-2024-39705 (pickle RCE in nltk.download)
+
+# --- analysis / reporting -------------------------------------------------
+matplotlib>=3.8
+seaborn>=0.13
+tqdm>=4.66
+rich>=13.7
+pyyaml>=6.0
+jsonlines>=4.0
+
+# --- forensics tooling (deserialization triage, on-device threat model) ----
+picklescan>=0.0.21         # opcode allow-list scan of pickled checkpoints
+fickling>=0.1.3            # pickle decompiler + static/dynamic injection analysis
+
+# --- dev / notebooks ------------------------------------------------------
+pytest>=8.0
+ruff>=0.6                  # `make lint` / `make fmt`
+jupyterlab>=4.2
+ipywidgets>=8.1

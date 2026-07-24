@@ -1,0 +1,159 @@
+# ai-forensics — the entire UX of this testbed.
+#
+# `make` (or `make help`) lists every target.  Works from any cwd: all paths are
+# derived from the location of this file.
+
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
+
+ROOT          := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
+COMPOSE_FILE  := $(ROOT)/docker/docker-compose.yml
+SERVICE       := aiforensics
+CONTAINER     := aif-dev
+
+# `docker compose -f docker/...` resolves `.env` next to the compose file, not at
+# the project root — so point it at the root .env explicitly, when it exists.
+# Recursive (=) on purpose: the `env` target may create it during this run.
+ENV_FILE       = $(if $(wildcard $(ROOT)/.env),--env-file $(ROOT)/.env,)
+COMPOSE        = docker compose $(ENV_FILE) -f $(COMPOSE_FILE)
+
+# Build the image for whoever is running make, so bind-mounted files stay theirs.
+export AIF_UID ?= $(shell id -u)
+export AIF_GID ?= $(shell id -g)
+
+# Set DC_EXEC_FLAGS=-T when calling from a script/CI with no TTY.
+DC_EXEC_FLAGS ?=
+EXEC           = $(COMPOSE) exec $(DC_EXEC_FLAGS) $(SERVICE)
+JUPYTER_PORT  ?= $(shell sed -n 's/^AIF_JUPYTER_PORT=//p' $(ROOT)/.env 2>/dev/null | tail -1)
+JUPYTER_PORT  := $(or $(JUPYTER_PORT),8888)
+
+# Extra arguments for the script/pytest targets, e.g.  make test ARGS="-k rag -x"
+ARGS ?=
+
+# Shared by `clean` and `nuke`. Kept as a variable rather than a recursive
+# `$(MAKE) clean` call: GNU make runs recipe lines containing "$(MAKE)" even
+# under `-n`, which would make `make -n nuke` genuinely destructive.
+define CLEAN_CACHES
+find $(ROOT) -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true; \
+find $(ROOT) -type f -name '*.py[co]' -delete 2>/dev/null || true; \
+find $(ROOT) -type d -name '.ipynb_checkpoints' -prune -exec rm -rf {} + 2>/dev/null || true; \
+rm -rf $(ROOT)/.pytest_cache $(ROOT)/.ruff_cache $(ROOT)/src/*.egg-info $(ROOT)/build $(ROOT)/dist
+endef
+
+.PHONY: help env host-cache build rebuild up down stop restart ps ensure-up shell \
+        jupyter logs smoke fetch-models fetch-datasets rag-index test lint fmt \
+        config clean nuke
+
+##@ Help
+
+help:  ## Show this help
+	@awk 'BEGIN {FS = ":.*##"; printf "\nai-forensics — usage: make <target>\n"} \
+		/^[a-zA-Z_.-]+:.*##/ { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 } \
+		/^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) }' $(MAKEFILE_LIST)
+	@printf "\nvariables: ARGS=\"...\"  DC_EXEC_FLAGS=-T  AIF_UID/AIF_GID\n\n"
+
+##@ Container lifecycle
+
+env: $(ROOT)/.env  ## Create .env from .env.example if missing
+
+$(ROOT)/.env:
+	@cp $(ROOT)/.env.example $@
+	@echo ">> created $@ from .env.example — set HF_TOKEN and AIF_JUPYTER_PORT before 'make up'"
+
+host-cache: env  ## Create the host cache dirs (HF + torch.hub) as the current user
+	@set -a; [ -f $(ROOT)/.env ] && . $(ROOT)/.env 2>/dev/null; set +a; \
+	for d in "$${AIF_HF_CACHE:-$$HOME/.cache/huggingface}" \
+	         "$${AIF_TORCH_CACHE:-$$HOME/.cache/torch}/hub/checkpoints"; do \
+		[ -d "$$d" ] || { mkdir -p "$$d" && echo ">> created host cache dir $$d"; }; \
+	done
+
+build: env  ## Build the container image (uid/gid = current user)
+	$(COMPOSE) build $(ARGS)
+
+rebuild: env  ## Rebuild the image from scratch, no layer cache
+	$(COMPOSE) build --no-cache --pull $(ARGS)
+
+# host-cache first: Docker creates a missing bind-mount source as root, which
+# silently makes the cache read-only for the container's aif user.
+up: env host-cache  ## Start the container in the background
+	$(COMPOSE) up -d
+	@$(COMPOSE) ps
+
+down:  ## Stop and remove the container (volumes/bind mounts untouched)
+	$(COMPOSE) down
+
+stop:  ## Stop the container without removing it
+	$(COMPOSE) stop
+
+restart: down up  ## Recreate the container
+
+ps:  ## Show container status
+	@$(COMPOSE) ps
+
+ensure-up: host-cache
+	@if [ -z "$$(docker ps -q -f name='^$(CONTAINER)$$' -f status=running)" ]; then \
+		echo ">> $(CONTAINER) is not running — starting it"; \
+		$(COMPOSE) up -d >/dev/null; \
+	fi
+
+##@ Working in the container
+
+shell: ensure-up  ## Interactive bash shell inside the container
+	$(EXEC) bash -l
+
+jupyter: ensure-up  ## Run JupyterLab (published on http://127.0.0.1:$(JUPYTER_PORT))
+	@echo ">> JupyterLab → http://127.0.0.1:$(JUPYTER_PORT)/   (Ctrl-C to stop)"
+	@echo ">> remote host? ssh -N -L $(JUPYTER_PORT):127.0.0.1:$(JUPYTER_PORT) $$(whoami)@<this-box>"
+	$(EXEC) jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --ServerApp.root_dir=/workspace $(ARGS)
+
+logs:  ## Follow container logs (includes the startup banner)
+	$(COMPOSE) logs -f --tail=200
+
+##@ Testbed
+
+smoke: ensure-up  ## End-to-end environment check (GPU, cache, imports)
+	$(EXEC) python scripts/smoke_test.py $(ARGS)
+
+fetch-models: ensure-up  ## Download the pinned models into the shared HF cache
+	$(EXEC) python scripts/fetch_models.py $(ARGS)
+
+fetch-datasets: ensure-up  ## Download the pinned datasets into the shared HF cache
+	$(EXEC) python scripts/fetch_datasets.py $(ARGS)
+
+rag-index: ensure-up  ## Build the RAG vector index under data/rag
+	$(EXEC) python scripts/build_rag_index.py $(ARGS)
+
+test: ensure-up  ## Run the pytest suite
+	$(EXEC) python -m pytest $(ARGS)
+
+lint: ensure-up  ## Ruff lint (no changes written)
+	$(EXEC) ruff check src tests scripts $(ARGS)
+
+fmt: ensure-up  ## Ruff format + autofix
+	$(EXEC) ruff format src tests scripts
+	$(EXEC) ruff check --fix src tests scripts
+
+##@ Maintenance
+
+config:  ## Render and validate the compose configuration
+	@$(COMPOSE) config
+
+clean:  ## Remove python/test caches. Leaves data/, models/, outputs/ alone.
+	@$(CLEAN_CACHES)
+	@echo ">> caches removed (data/, models/, outputs/ untouched)"
+
+nuke:  ## DESTRUCTIVE: remove container + image AND every generated artifact
+	@echo ""
+	@echo "  This will permanently delete:"
+	@echo "    - the $(CONTAINER) container and the aiforensics image"
+	@echo "    - everything under data/, models/ and outputs/ (poisoned sets,"
+	@echo "      fine-tuned weights, adapters, run logs, reports)"
+	@echo "  It will NOT touch the host HuggingFace cache (~/.cache/huggingface)."
+	@echo ""
+	@read -r -p "  Type 'nuke' to confirm: " confirm; \
+	if [ "$$confirm" != "nuke" ]; then echo "  aborted."; exit 1; fi; \
+	$(COMPOSE) down -v --remove-orphans --rmi local || true; \
+	find $(ROOT)/data $(ROOT)/models $(ROOT)/outputs -mindepth 2 -maxdepth 2 \
+		! -name '.gitkeep' -exec rm -rf {} + 2>/dev/null || true; \
+	$(CLEAN_CACHES); \
+	echo ">> nuked. Run 'make build && make up' to start over."

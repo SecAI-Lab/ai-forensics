@@ -1,0 +1,108 @@
+# ---------------------------------------------------------------------------
+# Generated evidence: datasets, weights, adapters, indexes, run artifacts.
+# These are large and reproducible from scripts/, so the CONTENTS are ignored
+# while the directory skeleton is kept (the .gitkeep negation at the bottom).
+# ---------------------------------------------------------------------------
+data/**
+models/**
+outputs/**
+
+# re-include the directories themselves so git can descend to the .gitkeep files
+!data/**/
+!models/**/
+!outputs/**/
+
+# ---------------------------------------------------------------------------
+# Secrets and local configuration
+#
+# Nothing in here should ever reach a remote. Tokens belong in `.env` (ignored)
+# or the host credential store — never in tracked files, and never in the image.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.netrc
+.git-credentials
+credentials.json
+hf_token*
+*.token
+*_token
+*.secret
+secrets.*
+
+# ---------------------------------------------------------------------------
+# Model / serialized artifacts, wherever they land.
+#
+# This is a forensics testbed: pickled checkpoints under analysis may be
+# deliberately malicious, so nothing of that shape gets committed even if it is
+# written outside the managed models/ and data/ trees.
+# ---------------------------------------------------------------------------
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.safetensors
+*.gguf
+*.onnx
+*.faiss
+*.index
+*.npy
+*.npz
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+.venv/
+venv/
+env/
+
+# ---------------------------------------------------------------------------
+# Tooling caches
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ---------------------------------------------------------------------------
+# Notebooks
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+notebooks/outputs/
+notebooks/**/outputs/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# ---------------------------------------------------------------------------
+# Directory skeleton markers — must stay last so they win over the rules above.
+# ---------------------------------------------------------------------------
+!**/.gitkeep

@@ -1,0 +1,40 @@
+# Keep the build context small: the image only needs docker/requirements.txt and
+# docker/entrypoint.sh — the project source is bind-mounted at runtime, not copied.
+
+# Bulk artifacts (tens of GB)
+data/
+models/
+outputs/
+
+# VCS + editor state
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.swp
+
+# Caches
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Notebooks and their checkpoints (never needed at build time)
+notebooks/
+**/.ipynb_checkpoints/
+
+# Secrets must never enter a build layer
+.env
+*.pem
+*.key
+
+# Docs / local scratch
+*.md
+!README.md
