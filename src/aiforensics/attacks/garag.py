@@ -29,13 +29,24 @@ Three consequences for this testbed, all of them load-bearing:
    "#corrupted-documents-flagged / #corrupted".
 2. Any detector that asks "is the gold answer present in this passage?" is
    blind to GARAG by construction.
-3. Conversely, perplexity/fluency detectors — which the paper's own analysis
-   notes PoisonedRAG defeats — should be *strong* here: typo-ridden text is
-   exactly what a fluency filter is built to catch. GARAG's defence is not
-   stealth against an LM scorer, it is that the corrupted text is
-   indistinguishable from genuinely noisy real-world documents (OCR output,
-   user-generated text), so filtering it also filters legitimate corpus content.
-   That trade-off, not evasion, is the paper's point.
+3. Conversely, surface text-quality detectors (perplexity, fluency,
+   grammaticality) should be *strong* here: typo-ridden text is exactly what
+   such a filter is built to catch. That expectation is **ours** — the paper
+   contains no occurrence of "perplexity" or "fluen*" and does not discuss
+   PoisonedRAG. What the paper does measure is §5.2 "Defense Strategy" and
+   Figure 5 ("Distribution of grammatically correct documents among d* on NQ
+   with the Contriever and Llama2-7b"): it runs a grammar checker — the GRS
+   DeBERTa checker presented in Dehghan et al. (2022), motivated by Formento
+   et al. (2023) — and reports that "approximately 50% of the original and
+   clean samples are determined to be the nosiy documents" [sic] while "about
+   25% of the samples maintain grammatical correctness at a low perturbation
+   level", concluding that "relying solely on a grammar checker would result in
+   dismissing many original documents and accepting some adversarial ones".
+   So GARAG's defence is not stealth against a text-quality scorer: it is that
+   the corrupted text is indistinguishable from genuinely noisy real-world
+   documents (OCR output, user-generated text), so filtering it also filters
+   legitimate corpus content. That trade-off, not evasion, is the paper's
+   point.
 
 :func:`garag_documents` provides an *injection-style* variant that matches
 ``poisonedrag.poison_documents``'s dict shape so the existing benchmark scores
@@ -96,10 +107,12 @@ EXPECTED FAILURE MODES, HONESTLY
   ``ASR_R`` is unaffected — but the two objectives are wildly different in
   dynamic range, and any downstream code that combines them by summing or
   weighting will be dominated by ``L_GPR``. Do not scalarise them.
-* **``mode="retriever"`` is not an attack.** It is offered because it is ~40x
-  cheaper, but optimising ``L_RSR`` alone only makes the corrupted document more
-  retrievable — which on its own degrades nothing. Use it to calibrate cost or
-  to pre-screen, never to report an ASR.
+* **``mode="retriever"`` is not an attack.** It is offered because it drops the
+  reader forwards, which are the more expensive half by a factor this module has
+  **not** measured (see :func:`cost_estimate`), but optimising ``L_RSR`` alone
+  only makes the corrupted document more retrievable — which on its own
+  degrades nothing. Use it to calibrate cost or to pre-screen, never to report
+  an ASR.
 * **Natural typos are off by default.** The reference's ``en.natural`` table is
   a 543 KB Wikipedia-edit-history typo list vendored from
   https://github.com/yannikbenz/zeroe. It is not vendored here; pass
@@ -123,6 +136,7 @@ import logging
 import math
 import random
 import re
+import string
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -230,15 +244,37 @@ NLTK_ENGLISH_STOPWORDS: frozenset[str] = frozenset((
     "wasn't", "weren", "weren't", "won", "won't", "wouldn", "wouldn't",
 ))
 
-#: Word tokeniser. TextAttack's ``words_from_text`` accumulates alphanumeric
-#: runs and admits ``' - _ * @`` *inside* a word. This regex is the same rule
-#: expressed as a span-producing pattern, which is what lets
-#: :func:`apply_edits` splice replacements back without re-joining tokens (the
-#: reference goes through ``AttackedText.replace_words_at_indices``). Deviation:
-#: TextAttack additionally treats a homoglyph table as word characters; that
-#: branch is unreachable for the four typo operators here, none of which emit
-#: homoglyphs, so it is omitted.
-_WORD_RE = re.compile(r"[0-9A-Za-z]+(?:['\-_*@][0-9A-Za-z]+)*")
+#: Word tokeniser. The reference tokenises through TextAttack's
+#: ``AttackedText.words``, i.e. ``words_from_text`` in
+#: ``textattack/shared/utils/strings.py``, which collapses whitespace and then,
+#: per whitespace token, strips ``' - _ * @`` off both ends, runs
+#: ``re.findall(r"[\w<homos>'\-_\*@]+", token)``, and strips ``' - _ * @`` off
+#: both ends of every match. Two consequences drive this pattern:
+#:
+#: * ``\w`` is **Unicode-aware**, so ``café``, ``Zoë`` and ``Straße`` are single
+#:   words. An ASCII-only class splits them (``caf`` + ``é``…), which shifts
+#:   every later word index and therefore the modifiable-word set and the
+#:   realised perturbation rate. The corpus is Wikipedia; accented names are
+#:   everywhere.
+#: * After the two strips, a word is exactly the span from the first to the last
+#:   alphanumeric inside a maximal ``[\w'\-_*@]`` run — which is what the
+#:   pattern below matches.
+#:
+#: Spans rather than a token list is what lets :func:`apply_edits` splice
+#: replacements back without re-joining tokens (the reference goes through
+#: ``AttackedText.replace_words_at_indices``). Verified token-for-token against
+#: a transcription of ``words_from_text`` on 200,000 random strings drawn from
+#: ASCII letters, digits, ``' - _ * @ . , ! ?``, whitespace and the non-ASCII
+#: set ``é ö ñ ß ü Å``, an em dash, a U+2019 apostrophe and ``北``:
+#: zero mismatches.
+#:
+#: Two deviations remain, both unreachable here. TextAttack also admits a
+#: homoglyph table as word characters; none of the four typo operators emits a
+#: homoglyph, so that branch never fires. And TextAttack routes any string
+#: containing a CJK codepoint through ``jieba`` segmentation, which is not
+#: reproduced — irrelevant for an English Wikipedia corpus, wrong if you point
+#: this at a CJK one.
+_WORD_RE = re.compile(r"[^\W_](?:[\w'\-*@]*[^\W_])?")
 
 
 # --------------------------------------------------------------------------- #
@@ -253,7 +289,8 @@ class GaragConfig:
     comment: ``src/option.py`` declares argparse defaults
     (``max_iters=5``, ``transformations_per_example=100``), but ``eval.sh``
     overrides both with ``--max_iters=25 --transformations_per_example=25``,
-    which is what the paper's appendix reports (S = 25, N_iter = 25).
+    which is what the paper's §4.4 "Implementation Details" reports
+    (S = 25, N_iter = 25, pr_pert = 0.2).
     Separately, ``build_attack`` never forwards ``--crossover_prob``,
     ``--mutation_prob``, ``--parents_num`` or the penalties to
     ``CustomGenetic``, so those take the *constructor* defaults
@@ -374,8 +411,10 @@ def keyboard_typos(
     table shipped with it — transcribed as written.
 
     The table's neighbours include punctuation (``; . , - [ '``), so a
-    "keyboard typo" can insert a character that the word tokeniser then treats
-    as a boundary — one word becomes two, and every later word index shifts.
+    "keyboard typo" can insert a character the word tokeniser then treats as a
+    boundary: ``; . , [`` are outside :data:`_WORD_RE`'s class, so one word
+    becomes two and every later word index shifts. (``-`` and ``'`` are *inside*
+    the class — TextAttack admits both mid-word — so those two do not split.)
     That is the published table's behaviour, not a bug here, but it means the
     realised edit count measured by naively zipping word lists will overcount.
 
@@ -537,19 +576,45 @@ def replacement_words(
     config: GaragConfig | None = None,
     natural_table: Mapping[str, Sequence[str]] | None = None,
     rng: random.Random | None = None,
+    *,
+    dedupe: bool = False,
 ) -> list[str]:
     """Union of the enabled operators' candidates for one word.
 
-    Reproduces ``Typo._get_replacement_words``, which concatenates keyboard,
-    natural, truncate and inner-swap candidates in that order without
-    de-duplicating across operators — so a variant reachable two ways is twice
-    as likely to be sampled. That weighting is preserved.
+    Reproduces ``Typo._get_replacement_words``
+    (``src/attack_module/transformation.py:198``), which concatenates the four
+    operators in that order::
+
+        per_words = self._get_keyboard_typo(word) + self._get_natural_typo(word)
+                  + self._get_truncate(word) + self._get_innerswap(word)
+
+    That concatenation can contain duplicates, but the reference's **only**
+    consumer removes them: ``SimpleAttack.get_perturbed_sequences``
+    (``transformation.py:55``, the one ``CustomGenetic._mutation`` and
+    ``_initialize_population`` call at ``attacker.py:335`` and ``:365``) builds
+    its sampling pool at ``transformation.py:78`` as ::
+
+        replacement_words += list(set(self._get_replacement_words(word_to_replace)))
+
+    so a variant reachable through two operators is *not* more likely to be
+    drawn. This function therefore mirrors ``_get_replacement_words`` (raw
+    concatenation, ``dedupe=False``) and :func:`_sample_edits` mirrors the
+    consumer's ``set()`` — which is where the reference's behaviour actually
+    lives. Earlier revisions of this module claimed the opposite and preserved a
+    duplicate weighting the reference does not have; that was wrong.
 
     Args:
         word: The word to corrupt.
         config: Selects the enabled operators and truncation bounds.
         natural_table: Typo table for the ``"natural"`` operator.
         rng: Random source for :func:`inner_swaps`.
+        dedupe: Drop duplicates, keeping first-occurrence order. ``False``
+            (default) matches ``_get_replacement_words``; the reference's
+            sampler applies the equivalent of ``True``. Order is preserved
+            rather than ``set``-arbitrary, because ``list(set(...))`` order is
+            not reproducible across processes and this module's RNG draws must
+            be — the sampled *set* is identical either way, only which member a
+            given RNG state picks differs.
 
     Returns:
         Candidate replacements; possibly empty, and possibly containing ``word``
@@ -567,7 +632,7 @@ def replacement_words(
         )
     if "innerswap" in cfg.operators:
         out += inner_swaps(word, rng)
-    return out
+    return list(dict.fromkeys(out)) if dedupe else out
 
 
 # --------------------------------------------------------------------------- #
@@ -775,8 +840,10 @@ class GaragFitness:
       forward per candidate.
     * ``"reader"`` — ``L_RSR`` pinned to 1.0. Optimises only the grounding
       failure. Cheaper by the retriever pass, which is the smaller half.
-    * ``"retriever"`` — ``L_GPR`` pinned to 1.0. ~40x cheaper, and **not an
-      attack**: it only makes the corrupted copy out-rank the clean one, which
+    * ``"retriever"`` — ``L_GPR`` pinned to 1.0. Drops the reader forwards,
+      which are the more expensive half; **by what factor is not measured
+      here** — see :func:`cost_estimate`, which ships counts, not timings. Not
+      an attack: it only makes the corrupted copy out-rank the clean one, which
       degrades nothing on its own. Use for cost calibration or pre-screening.
 
     Args:
@@ -790,9 +857,20 @@ class GaragFitness:
             ``Document.embedding_text()`` retrieves on ``"title text"``, so a
             retriever score computed on the body alone is not the score the
             store would produce. Passing the title here prepends it for scoring
-            *without* exposing it to perturbation, which matches the reference:
-            DPR's ``psgs_w100`` keeps title and passage in separate fields and
-            GARAG corrupts only ``ctx["context"]``.
+            *without* exposing it to perturbation.
+
+            **This is our adaptation; it has no reference counterpart.** There
+            is no title anywhere in the reference's attack path:
+            ``src/attacker.py:385`` builds its candidate list as
+            ``[ctx["context"] for ctx in ctxs]``, ``:391`` reads ``ctx["id"]``,
+            and ``:393`` passes ``ctx["context"]`` into ``perform_search`` —
+            those are the only ``ctx`` keys the attack touches. Downstream,
+            ``src/attack_module/goal.py:148`` ``Retriever_Wrapper.__call__``
+            tokenises those context strings directly
+            (``self.tokenizer(ctx, **self.tokenizer_kwargs)``, ``:155``) with no
+            title concatenation. Leave it ``""`` to score exactly what the reference
+            scores; set it to score what this testbed's store would. The two
+            give different ``L_RSR`` values — pick one and record which.
         encoder: ``SentenceTransformer`` used as retriever. Required unless
             ``mode="reader"``.
         model: Reader causal LM. Required unless ``mode="retriever"``.
@@ -997,9 +1075,10 @@ def cost_estimate(
 ) -> dict[str, Any]:
     """Exact model-call budget for attacking **one** document.
 
-    These are counts, derived from the search's control flow, not timings —
+    These are counts, derived from the search's control flow, not GPU timings —
     this module deliberately does not ship a wall-clock number it has not
-    measured on the target GPU. Multiply by measured per-forward throughput.
+    measured on the target GPU, and that includes *ratios* of wall-clock costs.
+    Multiply by measured per-forward throughput.
 
     The counts follow from three facts about the reference:
 
@@ -1016,26 +1095,43 @@ def cost_estimate(
     With the paper's settings (S = 25, N_iter = 25, N_parents = 10) that is
     ``75 + 25 * 60 = 1575`` candidate evaluations per document — 1575 retriever
     forwards and 1575 reader forwards, batched ``config.batch_size`` at a time.
-    ``mode="retriever"`` drops the reader half, which is the expensive one: a
-    reader forward is over a ~512-token prompt through a 1.7B model, a retriever
-    forward is over the same passage through a 22M-parameter MiniLM, so the
-    retriever-only mode is roughly two orders of magnitude cheaper per candidate
-    and is the ~40x figure quoted in :class:`GaragFitness` once batching and
-    fixed overheads are folded in.
+    ``mode="retriever"`` drops the reader half. That half is the more expensive
+    one — a reader forward runs a causal LM over a ~512-token prompt, a
+    retriever forward runs a sentence encoder over the same passage — but the
+    retriever-only and retriever+reader costs differ by a factor that **has not
+    been measured on this testbed**, so no ratio is quoted, here or anywhere
+    else in this module. Time one batch of each on your own hardware and
+    multiply by the counts above.
 
     This is an *upper* bound on the children term: ``_crossover_operation``
     returns nothing when the parents' perturbation sets overlap too much, and
     ``early_stop`` can end the search before ``max_iters``.
 
-    The one number here that *is* measured: with the model forwards replaced by
-    a stub, the search's own bookkeeping (tokenising, sampling operators,
-    splicing edits, non-dominated sorting) runs at **0.6 ms per candidate** on
-    this host's CPU for a 550-character / 40-modifiable-word passage — about
-    **0.9 s per document** at paper settings. That is the floor; it is
-    negligible next to 1575 reader forwards, and it is the *whole* cost of
-    :func:`craft_random_typo`. The GPU terms are deliberately left as counts:
-    they have not been measured on this testbed's A6000 and this module does not
-    publish timings it did not take.
+    The one number here that *is* measured, on this host's CPU with both model
+    forwards replaced by an O(1) stub: the search's own bookkeeping (tokenising,
+    sampling operators, splicing edits, non-dominated sorting, survival) costs
+
+    ===============================================  =============  ============
+    passage                                          per candidate  per document
+    ===============================================  =============  ============
+    483 chars / 84 words / 47 modifiable             0.070 ms       0.111 s
+    828 chars / 147 words / 82 modifiable            0.095 ms       0.150 s
+    ===============================================  =============  ============
+
+    at paper settings (1575 candidates each; median of 7 runs, spread under 3%).
+    Conditions, because none of this transfers: English Wikipedia-style
+    passages, ``GaragConfig(early_stop=False)`` and otherwise defaults — so
+    ``natural_typo_path`` is ``None`` and three of the four operators fire —
+    CPython **3.8.10** with numpy 1.24.4 on an Intel Xeon Gold 5218R @ 2.10 GHz.
+    3.8 is the only interpreter on this host with numpy installed; the project
+    targets 3.11, so re-measure there before quoting these. Enabling the natural
+    typo table adds a dict lookup per candidate word plus a one-off 543 KB file
+    parse, and has not been measured here because the table is not vendored.
+
+    That is the floor; it is negligible next to 1575 reader forwards, and it is
+    the *whole* cost of :func:`craft_random_typo`. The GPU terms are deliberately
+    left as counts: they have not been measured on this testbed's GPU and this
+    module does not publish timings it did not take.
 
     Args:
         config: Hyperparameters.
@@ -1072,8 +1168,32 @@ def non_dominated_sort(F: np.ndarray) -> list[np.ndarray]:
     The reference calls
     ``pymoo.util.nds.non_dominated_sorting.NonDominatedSorting(method=
     "fast_non_dominated_sort")``. pymoo is not in this container, so the
-    standard algorithm is reimplemented here; it is deterministic and has no
-    free parameters, so there is nothing to diverge on.
+    standard algorithm is reimplemented here.
+
+    The sort is deterministic, but it does have one free parameter — the
+    **domination relation** — and the paper and the code the paper ran disagree
+    on it:
+
+    * **Paper, Definition A.1.** ``d'_j ≺ d'_i`` iff
+      ``L_RSR(d'_i) < L_RSR(d'_j)`` *and* ``L_GPR(d'_i) < L_GPR(d'_j)`` —
+      strict ``<`` required on **both** objectives.
+    * **pymoo** (``pymoo/util/dominator.py::Dominator``, both
+      ``get_relation`` and ``calc_domination_matrix``): ``a`` dominates ``b``
+      iff ``a`` is strictly better on at least one objective and not strictly
+      worse on any — the textbook NSGA-II relation. This is what the reference
+      runs: ``src/attacker.py:280`` builds
+      ``NonDominatedSorting(method="fast_non_dominated_sort")``, and
+      ``:106`` calls ``Dominator.get_relation(f_a, f_b)`` directly inside
+      ``binary_tournament``. So it is unambiguously the relation that produced
+      the paper's numbers.
+
+    This function implements **pymoo's**, so that :func:`nsga2_survival` and
+    :func:`_binary_tournament` agree with the reference rather than with the
+    paper's prose. The two differ exactly on ties: for ``a = (1.0, 5.0)`` and
+    ``b = (1.0, 3.0)`` pymoo has ``b`` dominating ``a``, while Definition A.1
+    leaves them incomparable — so the paper's definition would produce strictly
+    larger (more permissive) fronts and a different survival cut. Recorded here
+    because the choice is invisible from the call site.
 
     Args:
         F: ``(n, m)`` objective matrix.
@@ -1182,6 +1302,11 @@ def _binary_tournament(
     2`` binary tournaments, and reshapes the winners into ``n_pairs`` parent
     pairs. A tournament is decided by Pareto domination first and by larger
     crowding distance second, with a coin flip on an exact tie.
+
+    The domination test here is pymoo's ``Dominator.get_relation``, which the
+    reference calls by that name — better on at least one objective, not worse
+    on any — and **not** the paper's Definition A.1 (strict ``<`` on both). See
+    :func:`non_dominated_sort` for why.
     """
     n = F.shape[0]
     n_random = n_pairs * 2 * 2
@@ -1234,11 +1359,19 @@ def _sample_edits(
     A word with no candidate replacement is silently skipped, so a returned
     genome can hold fewer than ``n_words`` edits.
 
+    The pool a word is sampled from is de-duplicated, because the reference
+    de-duplicates it at ``transformation.py:78``:
+    ``replacement_words += list(set(self._get_replacement_words(word_to_replace)))``.
+    See :func:`replacement_words` for why that is not where
+    ``_get_replacement_words`` puts it.
+
     ``cache`` reproduces the reference's ``self.word_dict``: a word's candidate
     list is computed once and reused for the whole search, which freezes the
     randomly-drawn inner-swap offsets. Deviation: the reference *appends* to its
-    cache whenever the cached list has ≤ 5 entries, duplicating short pools and
-    quietly re-weighting the sampling; this caches once, cleanly.
+    cache whenever the cached list has ≤ 5 entries
+    (``if len(replacement_words) <= 5: replacement_words += list(set(...))``),
+    duplicating short pools and quietly re-weighting the sampling on every
+    subsequent draw; this caches once, cleanly.
 
     The ``tries > 10 * budget`` break has no counterpart in the reference. It
     guards a genuine hang: when ``n_words`` computes to 0 (or every sampled word
@@ -1259,7 +1392,7 @@ def _sample_edits(
             word = spans[idx][0]
             cands = cache.get(word)
             if cands is None:
-                cands = replacement_words(word, cfg, natural_table, rng)
+                cands = replacement_words(word, cfg, natural_table, rng, dedupe=True)
                 cache[word] = cands
             if cands:
                 edits[idx] = rng.choice(cands)
@@ -1528,22 +1661,79 @@ def craft_random_typo(
     return [apply_edits(text, spans, g) for g in genomes[:n]] or [text]
 
 
-def _normalize_answer(s: str) -> str:
-    """SQuAD normalisation: lower, strip punctuation and articles, squash space.
+#: Deletion table for ``string.punctuation``, the exact set the reference's
+#: ``remove_punc`` excludes. ASCII-only by construction, so ``—``, ``“`` and
+#: other non-ASCII punctuation survive — as they do in the reference.
+_PUNCTUATION_DELETE = str.maketrans("", "", string.punctuation)
 
-    This is ``src/util.py::_normalize_answer`` in the reference, which is the
-    standard open-domain QA normaliser. Note it is *not* this testbed's
-    ``pipeline.answer_matches`` (a substring test): GARAG's success criterion is
-    exact match after normalisation, which is strictly harder.
+
+def _normalize_answer(s: str) -> str:
+    r"""SQuAD normalisation: lower, delete punctuation and articles, squash space.
+
+    Transcribed from the reference's ``src/util.py:140`` (verified against a
+    checkout of ``zomss/GARAG@main``)::
+
+        def _normalize_answer(s):
+            def remove_articles(text):
+                return re.sub(r"\b(a|an|the)\b", " ", text)
+            def white_space_fix(text):
+                return " ".join(text.split())
+            def remove_punc(text):
+                exclude = set(string.punctuation)
+                return "".join(ch for ch in text if ch not in exclude)
+            def lower(text):
+                return text.lower()
+            return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+    Two details decide the result and a ``re.sub(r"[^\w\s]", " ", s)``
+    paraphrase gets both wrong: punctuation is **deleted**, not replaced by a
+    space, and the deleted set is exactly ``string.punctuation`` (ASCII), not
+    "everything outside ``\w\s``". Deleting *joins* the pieces:
+
+    ======================  ====================  =====================
+    input                   reference / this      ``[^\w\s]`` -> space
+    ======================  ====================  =====================
+    ``co-founder``          ``cofounder``         ``co founder``
+    ``U.S.A.``              ``usa``               ``u s``
+    ``Jean-Luc Picard``     ``jeanluc picard``    ``jean luc picard``
+    ``1998-99``             ``199899``            ``1998 99``
+    ``naïve Zoë``           ``naïve zoë``         ``naïve zoë``
+    ``x—y``                 ``x—y``               ``x y``
+    ======================  ====================  =====================
+
+    Hyphenated names and year ranges are common NQ/TriviaQA answers, and this
+    feeds :func:`_exact_match`, which is the early-stop gate in
+    :func:`craft_typo` *and* the paper's own success criterion — so the wrong
+    rule changes when the search terminates and which document is returned.
+
+    ``str.translate`` with a deletion table replaces the reference's
+    character-by-character comprehension; the two were checked identical on the
+    cases above plus 200,000 random strings over ASCII letters, digits,
+    ``string.punctuation``, whitespace and ``é ö ñ — ’``.
+
+    Note this is *not* this testbed's ``pipeline.answer_matches`` (a substring
+    test): GARAG's success criterion is exact match after normalisation, which
+    is strictly harder.
     """
-    s = s.lower()
-    s = re.sub(r"[^\w\s]", " ", s)
+    s = s.lower().translate(_PUNCTUATION_DELETE)
     s = re.sub(r"\b(a|an|the)\b", " ", s)
     return " ".join(s.split())
 
 
 def _exact_match(golds: Sequence[str], pred: str) -> bool:
-    """Reference ``util.EM``: normalised exact match against any gold answer."""
+    """Normalised exact match against any gold answer.
+
+    Reference ``src/util.py:156``::
+
+        def EM(golds, pred):
+            pred = _normalize_answer(pred)
+            golds = [_normalize_answer(g) for g in golds]
+            cor = max([gold == pred for gold in golds])
+            return cor
+
+    ``any`` replaces ``max`` over a list of bools — identical, except that the
+    reference raises on an empty ``golds`` and this returns ``False``.
+    """
     p = _normalize_answer(pred)
     return any(_normalize_answer(g) == p for g in golds)
 
