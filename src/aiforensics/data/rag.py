@@ -13,10 +13,36 @@ were added by an attacker — hence :attr:`RagStore.injected_ids` and
 
 Similarity metric
 -----------------
-Embeddings are L2-normalised and the index is ``IndexFlatIP`` (inner product).
-For unit-norm vectors inner product *is* cosine similarity, which is what
-sentence-transformers models are trained for; using raw L2 distance on
-un-normalised vectors would let document length dominate the ranking.
+The index is always ``IndexFlatIP`` (inner product); what the score *means*
+depends on ``normalize``, and a run manifest must say which was used:
+
+* ``normalize=True`` (**this project's default**) L2-normalises both documents
+  and queries, so inner product *is* cosine similarity — what
+  sentence-transformers bi-encoders are trained for.
+* ``normalize=False`` leaves the mean-pooled vectors un-normalised, so inner
+  product is the raw **dot product**. This is the *PoisonedRAG-faithful*
+  setting: PoisonedRAG's retrievers are Contriever, Contriever-msmarco and ANCE
+  (``src/utils.py``), and ``main.py`` scores them with ``--score_function dot``
+  by default, over embeddings from ``Contriever.forward``, whose ``normalize``
+  argument defaults to False. Under dot product, vector norm — and hence, in
+  practice, passage length and token repetition — contributes to the ranking.
+
+:attr:`RagStore.normalized` and :attr:`RagStore.similarity` record which regime
+a store is in, and both are written into ``meta.json`` by :meth:`RagStore.save`.
+
+Two traps make ``normalize=False`` more than a flag flip, both handled here:
+
+1. Many sentence-transformers checkpoints — including this project's default
+   ``all-MiniLM-L6-v2`` — end their module list with a ``Normalize`` layer, so
+   ``encode(normalize_embeddings=False)`` still returns unit-norm vectors and
+   the request is silently a no-op. :func:`build_index` measures the vectors it
+   actually got, warns, and records the truth rather than the request. Use
+   :func:`encoder_normalizes` to check ahead of time, or
+   ``load_encoder(..., strip_normalizer=True)`` to remove that layer.
+2. ``facebook/contriever`` ships no sentence-transformers config, so
+   ``SentenceTransformer`` falls back to wrapping it in mean pooling.
+   :func:`load_encoder` verifies that fallback instead of assuming it; see its
+   docstring for why the pooling is equivalent to Contriever's own.
 
 Index type
 ----------
@@ -408,23 +434,109 @@ def _corpus_digest(doc_ids: Sequence[str]) -> str:
     return h.hexdigest()[:12]
 
 
-def embedding_cache_path(corpus_name: str, encoder: str, doc_ids: Sequence[str]) -> Path:
-    """Path of the cached embedding matrix for this (corpus, encoder, size, ids)."""
+def embedding_cache_path(
+    corpus_name: str,
+    encoder: str,
+    doc_ids: Sequence[str],
+    normalize: bool = True,
+) -> Path:
+    """Path of the cached embedding matrix for this (corpus, encoder, size, ids).
+
+    Args:
+        corpus_name: Corpus name component of the key.
+        encoder: Model id component of the key.
+        doc_ids: Document ids; their count and digest are part of the key.
+        normalize: Whether the cached vectors are L2-normalised. This *must* be
+            part of the key: cosine and dot-product runs over the same corpus
+            and encoder are otherwise indistinguishable, and a dot-product run
+            would silently reuse unit-norm vectors from an earlier cosine run
+            (the recorded metric would then be a lie). Only the ``False`` case
+            adds a suffix, so caches written before this argument existed — all
+            of which were normalised — stay valid.
+
+    Returns:
+        Path under ``data/rag/embeddings``.
+    """
     key = (
         f"{corpus_name}__{_encoder_slug(encoder)}__n{len(doc_ids)}"
         f"__{_corpus_digest(doc_ids)}"
     )
+    if not normalize:
+        key += "__dot"
     return RAG_DIR / "embeddings" / f"{key}.npy"
 
 
-def load_encoder(encoder: str = DEFAULT_ENCODER, device: Any | None = None) -> Any:
+def encoder_normalizes(model: Any) -> bool:
+    """Whether a ``SentenceTransformer`` L2-normalises its own output.
+
+    Several popular checkpoints (``all-MiniLM-L6-v2`` among them) list a
+    ``Normalize`` module after pooling, which makes
+    ``encode(normalize_embeddings=False)`` a no-op — the caller asks for dot
+    product and gets cosine. Call this before building a dot-product index.
+
+    Args:
+        model: A loaded ``SentenceTransformer`` (or anything exposing
+            ``named_children``). Non-module objects return ``False``.
+
+    Returns:
+        True if any module in the pipeline is a ``Normalize`` layer.
+    """
+    try:
+        children = list(model.named_children())
+    except AttributeError:
+        return False
+    return any(type(m).__name__ == "Normalize" for _, m in children)
+
+
+def _is_unit_norm(emb: np.ndarray, tol: float = 1e-3, sample: int = 256) -> bool:
+    """Whether ``emb``'s rows have L2 norm 1 to within ``tol``.
+
+    Only the first ``sample`` rows are measured: normalisation is a property of
+    the encoding pipeline, not of individual passages, so the first few rows
+    settle it and a full pass over a 50k x 384 matrix is not worth the time.
+    """
+    if emb.size == 0:
+        return False
+    norms = np.linalg.norm(np.asarray(emb[:sample], dtype=np.float32), axis=1)
+    return bool(np.all(np.abs(norms - 1.0) <= tol))
+
+
+def load_encoder(
+    encoder: str = DEFAULT_ENCODER,
+    device: Any | None = None,
+    strip_normalizer: bool = False,
+) -> Any:
     """Instantiate a ``SentenceTransformer``, on GPU 0 when CUDA is available.
+
+    Plain HuggingFace encoders (``facebook/contriever`` and
+    ``facebook/contriever-msmarco`` ship only ``config.json`` /
+    ``pytorch_model.bin`` / tokenizer files — no ``modules.json``, no
+    ``1_Pooling/``) take sentence-transformers' ``_load_auto_model`` fallback,
+    which wraps the model as ``[Transformer, Pooling(dim, "mean")]``. That is
+    verified here rather than assumed, because it is the difference between
+    reproducing Contriever and silently scoring a ``[CLS]`` vector.
+
+    The pooling is equivalent to Contriever's own. ``Contriever.forward``
+    (``facebookresearch/contriever``, ``src/contriever.py``) computes
+    ``last_hidden.sum(1) / attention_mask.sum(1)`` over mask-zeroed hidden
+    states; ``Pooling`` in mean mode computes
+    ``sum(token_embeddings * mask) / clamp(sum(mask), min=1e-9)``. Identical
+    except for the clamp, which only guards an all-padding row. Neither
+    normalises — ``Contriever.forward``'s ``normalize`` argument defaults to
+    False — so the dot product of two such vectors is PoisonedRAG's default
+    ``score_function``.
 
     Args:
         encoder: HuggingFace model id.
         device: Explicit torch device; ``None`` asks
             :func:`aiforensics.device.get_device`, which is the only place
             that decides GPU vs CPU in this project.
+        strip_normalizer: Remove trailing ``Normalize`` modules, making
+            un-normalised (dot-product) embeddings reachable for checkpoints
+            that hard-wire cosine into their module list. Off by default: it
+            changes what the published checkpoint computes, so turn it on only
+            for a deliberately dot-product run and record it in the manifest.
+            Encoders without a ``Normalize`` module are unaffected.
 
     Returns:
         A ``SentenceTransformer`` instance.
@@ -434,7 +546,38 @@ def load_encoder(encoder: str = DEFAULT_ENCODER, device: Any | None = None) -> A
     SentenceTransformer = _sentence_transformer_cls()
     dev = get_device() if device is None else device
     log.info("loading encoder %s on %s", encoder, dev)
-    return SentenceTransformer(encoder, device=str(dev))
+    model = SentenceTransformer(encoder, device=str(dev))
+
+    modules = [type(m).__name__ for _, m in model.named_children()]
+    if modules[1:2] == ["Pooling"] and "Normalize" not in modules:
+        pooling = list(model.children())[1]
+        mode = getattr(pooling, "get_pooling_mode_str", lambda: "?")()
+        if not getattr(pooling, "pooling_mode_mean_tokens", False):
+            log.warning(
+                "encoder %s pools with %r, not mean-over-attention-mask; if this is "
+                "a Contriever-family model the embeddings will NOT match the "
+                "published retriever",
+                encoder, mode,
+            )
+        else:
+            log.info("encoder %s: mean pooling, no normalizer (dot-product capable)",
+                     encoder)
+
+    if strip_normalizer:
+        removed = 0
+        names = [n for n, _ in model.named_children()]
+        while names and type(model._modules[names[-1]]).__name__ == "Normalize":
+            del model._modules[names.pop()]
+            removed += 1
+        if removed:
+            log.warning(
+                "stripped %d Normalize module(s) from %s; embeddings are now "
+                "un-normalised and inner product is a true dot product",
+                removed, encoder,
+            )
+        else:
+            log.info("strip_normalizer=True but %s has no Normalize module", encoder)
+    return model
 
 
 def embed_texts(
@@ -453,7 +596,11 @@ def embed_texts(
         batch_size: Encoder batch size; defaults to ``settings.batch_size``.
         device: Torch device; ``None`` uses :func:`get_device`.
         normalize: L2-normalise rows so inner product equals cosine
-            similarity. Leave this True unless you know why you are not.
+            similarity. Leave this True unless you know why you are not — the
+            documented reason to set it False is PoisonedRAG-faithful
+            dot-product retrieval (see the module docstring). Note that this is
+            a *request*: a checkpoint whose module list ends in ``Normalize``
+            returns unit-norm vectors either way (:func:`encoder_normalizes`).
         show_progress: Show the sentence-transformers progress bar.
 
     Returns:
@@ -484,9 +631,9 @@ def encode_documents(
 ) -> np.ndarray:
     """Embed documents, reusing a cached matrix when one exists.
 
-    The cache key covers the corpus name, encoder, document count and a digest
-    of the document ids, so a differently-sliced or reordered corpus never
-    silently reuses the wrong vectors.
+    The cache key covers the corpus name, encoder, document count, a digest of
+    the document ids and the ``normalize`` flag, so neither a differently-sliced
+    corpus nor a cosine/dot-product switch can silently reuse the wrong vectors.
 
     Args:
         docs: Documents to embed (``Document.embedding_text`` is what is fed
@@ -508,14 +655,27 @@ def encode_documents(
         encoder if isinstance(encoder, str) else _model_name(encoder)
     )
     doc_ids = [d.doc_id for d in docs]
-    cache = embedding_cache_path(corpus_name, encoder_name, doc_ids)
+    cache = embedding_cache_path(corpus_name, encoder_name, doc_ids, normalize=normalize)
 
     if use_cache and cache.exists():
         emb = np.load(cache)
-        if len(emb) == len(docs):
+        if len(emb) != len(docs):
+            log.warning("cached embeddings at %s have wrong length; re-encoding", cache)
+        elif normalize and not _is_unit_norm(emb):
+            # Belt and braces over the cache key: a file written before
+            # `normalize` entered that key could hold un-normalised vectors, and
+            # reusing them for a cosine run is invisible downstream — the scores
+            # just quietly mean something else. The converse is not checked,
+            # because a self-normalising encoder legitimately returns unit-norm
+            # vectors under normalize=False (see `encoder_normalizes`), and
+            # rejecting those would re-encode the corpus on every single run.
+            log.warning(
+                "cached embeddings at %s are un-normalised but normalize=True was "
+                "requested; re-encoding", cache,
+            )
+        else:
             log.info("reusing cached embeddings %s", cache)
             return np.ascontiguousarray(emb.astype(np.float32, copy=False))
-        log.warning("cached embeddings at %s have wrong length; re-encoding", cache)
 
     t0 = time.perf_counter()
     emb = embed_texts(
@@ -541,7 +701,10 @@ def encode_documents(
                     "encoder": encoder_name,
                     "num_docs": len(docs),
                     "dim": int(emb.shape[1]),
-                    "normalized": normalize,
+                    "normalize_requested": normalize,
+                    # Measured, not assumed: a self-normalising checkpoint
+                    # ignores normalize=False.
+                    "normalized": _is_unit_norm(emb),
                     "doc_id_digest": _corpus_digest(doc_ids),
                     "created_at": _utcnow(),
                 },
@@ -588,7 +751,12 @@ class RagStore:
             is persisted and reused.
         injected_ids: Ids added post-hoc via :meth:`add_documents` — the
             ground truth for RAG-poisoning detection.
-        normalized: Whether the stored vectors are unit-norm.
+        normalized: Whether the stored vectors are unit-norm, i.e. whether the
+            index's inner product is cosine similarity (True, the project
+            default) or a raw dot product (False, the PoisonedRAG-faithful
+            setting). :meth:`encode_queries` follows this flag, so queries are
+            always scored the same way the documents were embedded. See
+            :attr:`similarity` and the module docstring.
     """
 
     def __init__(
@@ -642,6 +810,16 @@ class RagStore:
         return int(self.index.d)
 
     @property
+    def similarity(self) -> str:
+        """``"cosine"`` or ``"dot"`` — what this store's scores mean.
+
+        The index is ``IndexFlatIP`` either way; only :attr:`normalized`
+        distinguishes them. Put this in the run manifest: a detector's
+        threshold and a retrieval score are not comparable across the two.
+        """
+        return "cosine" if self.normalized else "dot"
+
+    @property
     def encoder(self) -> Any:
         """The query encoder, loaded lazily on first search."""
         if self._encoder is None:
@@ -678,7 +856,15 @@ class RagStore:
     # -- search ----------------------------------------------------------
 
     def encode_queries(self, queries: Sequence[str]) -> np.ndarray:
-        """Embed queries with the store's encoder and normalisation setting."""
+        """Embed queries with the store's encoder and normalisation setting.
+
+        ``normalize=self.normalized`` is load-bearing, not incidental: the query
+        side must use exactly the normalisation the index was built with, or the
+        inner product is neither cosine nor a dot product but a mixture of the
+        two, with a query-length factor that silently reorders results. The same
+        flag is used by :meth:`add_documents`, so injected passages land in the
+        same space as the corpus.
+        """
         return embed_texts(
             queries, encoder=self.encoder, normalize=self.normalized
         )
@@ -836,6 +1022,7 @@ class RagStore:
                     "dim": self.dim,
                     "metric": self.metric,
                     "normalized": self.normalized,
+                    "similarity": self.similarity,
                     "num_documents": len(self),
                     "num_injected": len(self.injected_ids),
                     "injected_ids": self.injected_ids,
@@ -924,9 +1111,13 @@ def build_index(
         batch_size: Encoder batch size; defaults to ``settings.batch_size``.
         device: Torch device; ``None`` uses :func:`get_device` (GPU 0 when
             CUDA is present).
-        normalize: L2-normalise vectors so inner product is cosine similarity.
-            Turning this off while keeping an IP index makes scores
-            length-dominated — don't.
+        normalize: L2-normalise vectors so inner product is cosine similarity
+            (the default). ``False`` keeps the IP index but leaves vectors
+            un-normalised, making the score a raw dot product — length- and
+            repetition-sensitive, and exactly what PoisonedRAG's retrievers do
+            (see the module docstring). Whether the request took effect is
+            *measured* after encoding and recorded on the store, because a
+            checkpoint ending in a ``Normalize`` module ignores it.
         use_cache: Reuse/write cached embeddings under ``data/rag/embeddings``.
         index_factory: A faiss ``index_factory`` string for large corpora,
             e.g. ``"IVF4096,Flat"``. Default ``None`` builds an exact
@@ -965,6 +1156,27 @@ def build_index(
     )
     dim = int(emb.shape[1])
 
+    # What we asked for is not necessarily what we got: a SentenceTransformer
+    # whose module list ends in `Normalize` returns unit-norm vectors whatever
+    # `normalize_embeddings` says. Record the measured fact, so the store, its
+    # meta.json and any run manifest describe the space the index is actually
+    # in rather than the space that was requested.
+    actually_normalized = _is_unit_norm(emb)
+    if normalize and not actually_normalized:
+        log.warning(
+            "normalize=True was requested but the encoded vectors are not "
+            "unit-norm; the index scores are dot products, not cosine"
+        )
+    elif not normalize and actually_normalized:
+        log.warning(
+            "normalize=False was requested but %s returns unit-norm vectors "
+            "anyway (a `Normalize` module in the checkpoint), so this index is "
+            "cosine, not dot product. For PoisonedRAG-faithful dot-product "
+            "retrieval use an encoder without one (e.g. facebook/contriever) or "
+            "load it with load_encoder(..., strip_normalizer=True).",
+            encoder if isinstance(encoder, str) else _model_name(encoder),
+        )
+
     if index_factory:
         index = faiss.index_factory(dim, index_factory, faiss.METRIC_INNER_PRODUCT)
         if not index.is_trained:
@@ -984,8 +1196,9 @@ def build_index(
             "encoder_name=... to build_index()."
         )
     log.info(
-        "built %s index: %d vectors, dim=%d, encoder=%s",
+        "built %s index: %d vectors, dim=%d, encoder=%s, similarity=%s",
         index_factory or "IndexFlatIP", index.ntotal, dim, resolved_name,
+        "cosine" if actually_normalized else "dot",
     )
     return RagStore(
         index=index,
@@ -993,10 +1206,13 @@ def build_index(
         documents=docs,
         encoder_name=resolved_name,
         corpus_name=corpus_name,
-        normalized=normalize,
+        normalized=actually_normalized,
         metric="ip",
         encoder=None if isinstance(encoder, str) else encoder,
-        meta={"index_factory": index_factory or "IndexFlatIP"},
+        meta={
+            "index_factory": index_factory or "IndexFlatIP",
+            "normalize_requested": normalize,
+        },
     )
 
 
@@ -1015,6 +1231,7 @@ __all__ = [
     "embed_texts",
     "embedding_cache_path",
     "encode_documents",
+    "encoder_normalizes",
     "load_corpus",
     "load_encoder",
     "load_qrels",

@@ -410,11 +410,15 @@ class GMTPDetector(Detector):
         """Calibrate ``τ = λ · (1/K) Σ P-scoreᵢ`` and set ``threshold = -τ``.
 
         Args:
-            clean_data: Either ``(query, passage)`` pairs, or bare query strings
-                — in which case ``store`` supplies each query's top-ranked
-                document as its "relevant document", the closest available stand-in
-                for the paper's training-set qrels. At most ``calibration_size``
-                (``K``) items are used.
+            clean_data: ``(query, passage)`` pairs, ``(query, [passage, ...])``
+                items (the shape :meth:`score` and the benchmark harness use —
+                each passage becomes its own calibration pair), or bare query
+                strings, in which case ``store`` supplies each query's
+                top-ranked document as its "relevant document", the closest
+                available stand-in for the paper's training-set qrels. See
+                :meth:`_as_pairs`. At most ``calibration_size`` (``K``) pairs
+                are used, counted **after** any list expansion — so K=1000 over
+                ``(query, k-passages)`` items consumes 1000/k queries, not 1000.
             **kwargs: Ignored; present for the base-class signature.
 
         Returns:
@@ -438,7 +442,28 @@ class GMTPDetector(Detector):
         return self
 
     def _as_pairs(self, clean_data: Iterable[Any]) -> list[tuple[str, str]]:
-        """Normalise ``clean_data`` into ``(query, passage)`` pairs."""
+        """Normalise ``clean_data`` into flat ``(query, passage)`` pairs.
+
+        Three input shapes are accepted, because what a caller has on hand for
+        calibration is not always the shape :meth:`score` is fed:
+
+        * a bare query string — ``store`` resolves it to its top-ranked
+          document, the closest stand-in available for the paper's qrels;
+        * ``(query, passage)`` — used as one pair;
+        * ``(query, [passage, ...])`` — the shape the benchmark harness and
+          :meth:`score` use; expanded to **one pair per passage**.
+
+        The last two must be distinguished explicitly. A list of passages
+        unpacks into ``query, passage`` without raising, and ``str([...])``
+        then yields the Python repr of the list — so ``τ`` would be calibrated
+        on ``"['doc one', 'doc two']"``, i.e. brackets and quotes, instead of
+        on passage text. That was a real bug here; hence the isinstance check
+        rather than a bare tuple unpack.
+
+        Raises:
+            ValueError: If an item is neither a string nor a two-element
+                ``(query, passage-or-passages)`` sequence.
+        """
         pairs: list[tuple[str, str]] = []
         for item in clean_data:
             if isinstance(item, str):
@@ -450,9 +475,21 @@ class GMTPDetector(Detector):
                 hits = self.store.search(item, k=1)
                 if hits:
                     pairs.append((item, hits[0].text))
+                continue
+            try:
+                query, passages = item
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "GMTPDetector.fit accepts query strings, (query, passage) pairs, or "
+                    f"(query, [passage, ...]) items; got {type(item).__name__} "
+                    f"{item!r:.80}"
+                ) from None
+            if isinstance(passages, str):
+                pairs.append((str(query), passages))
+            elif isinstance(passages, Iterable):
+                pairs.extend((str(query), str(p)) for p in passages)
             else:
-                query, passage = item
-                pairs.append((str(query), str(passage)))
+                pairs.append((str(query), str(passages)))
         return pairs
 
     def describe(self) -> dict:
