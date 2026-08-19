@@ -627,6 +627,33 @@ class Detector(ABC):
 _REGISTRY: dict[str, Callable[..., Detector]] = {}
 _DETECTOR_CATEGORY: dict[str, str] = {}
 
+#: Built-in technique modules, imported on first registry access. Importing them
+#: is side-effect-only (each registers its detectors) and must stay cheap: heavy
+#: third-party dependencies belong inside ``__init__``, not at module scope, so
+#: that listing detectors never fails on a machine missing an optional package.
+_BUILTIN_MODULES = ("rag_defense", "rag_similarity", "rag_isolation",
+                    "rag_agreement", "rag_perplexity", "rag_hybrid",
+                    "rag_gmtp", "rag_cleanbase",
+                    "rag_defense_score", "rag_fdr", "rag_consensus",
+                    "rag_cascade", "rag_query_gate",
+                    "rag_npas", "rag_reliability")
+_builtins_loaded = False
+
+
+def _ensure_builtins() -> None:
+    """Import the built-in technique modules exactly once."""
+    global _builtins_loaded
+    if _builtins_loaded:
+        return
+    _builtins_loaded = True  # set first: a failed import must not retry forever
+    import importlib
+
+    for mod in _BUILTIN_MODULES:
+        try:
+            importlib.import_module(f"{__package__}.{mod}")
+        except Exception:  # pragma: no cover - optional dependency missing
+            logger.warning("could not import built-in detector module %r", mod, exc_info=True)
+
 
 def register_detector(
     key: str,
@@ -713,6 +740,7 @@ def get_detector(key: str, **kwargs: Any) -> Detector:
             message doubles as the assignment.
         KeyError: If ``key`` is unknown, listing what is available.
     """
+    _ensure_builtins()
     if key in _REGISTRY:
         return _REGISTRY[key](**kwargs)
     if key in _TECHNIQUE_INDEX:
@@ -741,6 +769,7 @@ def list_detectors(category: str | None = None, *, modality: str | None = None) 
         category: Restrict to one category key.
         modality: Restrict to detectors declaring this modality.
     """
+    _ensure_builtins()
     keys = sorted(_REGISTRY)
     if category is not None:
         get_category(category)
@@ -756,6 +785,7 @@ def detector_tree() -> dict[str, dict]:
     Each technique carries ``implemented``, so a report can show coverage
     without cross-referencing two lists.
     """
+    _ensure_builtins()
     tree: dict[str, dict] = {}
     for ckey in sorted(CATEGORIES):
         cat = CATEGORIES[ckey]

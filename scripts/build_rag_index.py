@@ -39,11 +39,11 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from aiforensics.config import settings  # noqa: E402
-from aiforensics.data import rag  # noqa: E402
-from aiforensics.device import get_device, gpu_info  # noqa: E402
-from aiforensics.paths import RAG_DIR, ensure_dirs  # noqa: E402
-from aiforensics.seed import set_seed  # noqa: E402
+from aiforensics.config import settings
+from aiforensics.data import rag
+from aiforensics.device import get_device, gpu_info
+from aiforensics.paths import RAG_DIR, ensure_dirs
+from aiforensics.seed import set_seed
 
 log = logging.getLogger("build_rag_index")
 

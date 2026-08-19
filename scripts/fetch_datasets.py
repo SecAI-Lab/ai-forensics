@@ -34,12 +34,12 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from aiforensics.data.registry import (  # noqa: E402
+from aiforensics.data.registry import (
     describe_datasets,
     get_spec,
     list_datasets,
 )
-from aiforensics.paths import HF_CACHE, RAG_DIR, RAW_DIR, ensure_dirs  # noqa: E402
+from aiforensics.paths import HF_CACHE, RAG_DIR, RAW_DIR, ensure_dirs
 
 log = logging.getLogger("fetch_datasets")
 

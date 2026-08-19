@@ -7,7 +7,14 @@
 # fall back to the defaults below.  Container-side values still arrive via the
 # `env_file:` entry, which is resolved relative to this file.
 
-name: aiforensics
+# Project and container names are per-user. On a shared machine several people
+# run this same repo, and Docker container names are GLOBAL: a hardcoded
+# `aif-dev` means the second user's `make up` collides with the first user's
+# container, and `docker compose exec` then silently runs inside THEIR container,
+# against THEIR bind mounts and THEIR HuggingFace cache. `make env` writes a
+# username-suffixed default into .env; `make up` additionally verifies that the
+# running container is really mounting this checkout.
+name: ${AIF_PROJECT_NAME:-aiforensics}
 
 services:
   aiforensics:
@@ -17,9 +24,13 @@ services:
       args:
         UID: "${AIF_UID:-1000}"       # must match the host user running this, or every
         GID: "${AIF_GID:-1000}"       # file written to the bind mount lands root-owned
-    image: aiforensics:0.1.0
-    container_name: aif-dev
-    hostname: aif-dev
+    # Image tags are global too. The image bakes in the host user's uid/gid, so a
+    # colleague rebuilding the same tag replaces yours with one whose `aif` user
+    # has THEIR uid — every file the container writes then lands with the wrong
+    # owner, and the bind-mounted caches become unwritable. Keep it per-user.
+    image: ${AIF_IMAGE:-aiforensics}:${AIF_IMAGE_TAG:-0.1.0}
+    container_name: ${AIF_CONTAINER_NAME:-aif-dev}
+    hostname: ${AIF_CONTAINER_NAME:-aif-dev}
     init: true                        # reap zombies from tmux / dataloader workers
     working_dir: /workspace
 

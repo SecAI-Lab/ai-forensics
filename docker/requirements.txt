@@ -30,7 +30,9 @@ sentencepiece>=0.2         # tokenizer backend for several non-Qwen reference mo
 
 # --- RAG + retrieval ------------------------------------------------------
 sentence-transformers>=3.0
-faiss-cpu>=1.8             # CPU index: keeps GPU 0 free for the models under test
+faiss-cpu>=1.8             # CPU index: keeps the GPU free for the models under test
+ragdefender>=0.2.0         # post-retrieval RAG poisoning defence (ACSAC'25), our
+                           # reference detector for the rag-defense category
 nltk>=3.9                  # >=3.9 fixes CVE-2024-39705 (pickle RCE in nltk.download)
 
 # --- analysis / reporting -------------------------------------------------

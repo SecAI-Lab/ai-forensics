@@ -73,7 +73,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"scripts/*" = ["T20"]         # CLI entry points are allowed to print
+# E402: experiment scripts must call warnings.filterwarnings() before importing
+# numpy/torch/transformers, so module-level imports legitimately follow code.
+"scripts/*" = ["T20", "E402", "E702"]
 "tests/*" = ["T20"]
 "src/aiforensics/detectors/*" = ["ARG002"]  # abstract hooks keep unused params
 

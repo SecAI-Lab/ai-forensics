@@ -171,9 +171,22 @@ def test_describe_datasets_is_a_table() -> None:
 # --------------------------------------------------------------------------- #
 # detectors
 # --------------------------------------------------------------------------- #
-def test_only_the_baseline_detector_is_implemented() -> None:
-    """The real techniques are deliberately unimplemented (see the plan)."""
-    assert det.list_detectors() == ["random"]
+def test_implemented_detectors_are_the_rag_defense_set_plus_the_baseline() -> None:
+    """RAG defences are implemented; the other axes are still open slots.
+
+    The rag-defense category is the first work package, so it has real
+    detectors. input-anomaly, feature-space and neuron-activation are still
+    unimplemented on purpose — that is the contribution seam for the rest of the
+    team, and this test fails loudly if a slot is filled without updating the plan.
+    """
+    assert det.list_detectors("baseline") == ["random"]
+    assert set(det.list_detectors("rag-defense")) == {
+        "cascade", "cleanbase", "consensus", "fdr-control", "gmtp", "hybrid",
+        "knn-isolation", "npas", "passage-agreement", "perplexity", "query-gate",
+        "query-similarity", "ragdefender", "ragdefender-score", "reliability",
+    }
+    for empty in ("input-anomaly", "feature-space", "neuron-activation"):
+        assert det.list_detectors(empty) == [], f"{empty} unexpectedly has an implementation"
 
 
 def test_categories_cover_the_plans_detection_axes() -> None:
