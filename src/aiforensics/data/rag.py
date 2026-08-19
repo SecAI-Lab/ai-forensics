@@ -439,6 +439,7 @@ def embedding_cache_path(
     encoder: str,
     doc_ids: Sequence[str],
     normalize: bool = True,
+    stripped: bool = False,
 ) -> Path:
     """Path of the cached embedding matrix for this (corpus, encoder, size, ids).
 
@@ -453,6 +454,15 @@ def embedding_cache_path(
             (the recorded metric would then be a lie). Only the ``False`` case
             adds a suffix, so caches written before this argument existed — all
             of which were normalised — stay valid.
+        stripped: Whether the encoder had a trailing ``Normalize`` module removed
+            by ``load_encoder(..., strip_normalizer=True)``. This *also* must be
+            part of the key. For a checkpoint that self-normalises, a plain
+            ``normalize=False`` build still writes unit-norm vectors into the
+            ``__dot`` slot; a later stripped build — which does produce genuine
+            dot-product vectors — would then load those contaminated unit-norm
+            vectors and silently report cosine. Verified by
+            ``scripts/verify_retrievers.py``. Only the ``True`` case adds a
+            suffix, so existing caches stay valid.
 
     Returns:
         Path under ``data/rag/embeddings``.
@@ -463,7 +473,20 @@ def embedding_cache_path(
     )
     if not normalize:
         key += "__dot"
+    if stripped:
+        key += "__stripped"
     return RAG_DIR / "embeddings" / f"{key}.npy"
+
+
+def _looks_stripped(model: Any) -> bool:
+    """Whether ``load_encoder(..., strip_normalizer=True)`` produced this model.
+
+    ``load_encoder`` stamps the flag on the object; absence means an ordinary
+    load. Checked rather than inferred, because a checkpoint that simply never
+    had a ``Normalize`` module is NOT stripped and must keep sharing the plain
+    cache slot.
+    """
+    return bool(getattr(model, "_aif_stripped_normalizer", False))
 
 
 def encoder_normalizes(model: Any) -> bool:
@@ -570,6 +593,10 @@ def load_encoder(
             del model._modules[names.pop()]
             removed += 1
         if removed:
+            # Mark the object so encode_documents gives it a separate cache slot:
+            # the same checkpoint stripped and unstripped produces different
+            # vectors, and sharing a slot silently returns the wrong ones.
+            model._aif_stripped_normalizer = True
             log.warning(
                 "stripped %d Normalize module(s) from %s; embeddings are now "
                 "un-normalised and inner product is a true dot product",
@@ -655,7 +682,11 @@ def encode_documents(
         encoder if isinstance(encoder, str) else _model_name(encoder)
     )
     doc_ids = [d.doc_id for d in docs]
-    cache = embedding_cache_path(corpus_name, encoder_name, doc_ids, normalize=normalize)
+    # A stripped encoder produces different vectors from the same checkpoint, so
+    # it needs its own cache slot (see embedding_cache_path).
+    stripped = not isinstance(encoder, str) and _looks_stripped(encoder)
+    cache = embedding_cache_path(corpus_name, encoder_name, doc_ids,
+                                 normalize=normalize, stripped=stripped)
 
     if use_cache and cache.exists():
         emb = np.load(cache)
