@@ -106,3 +106,7 @@ notebooks/**/outputs/
 # Directory skeleton markers — must stay last so they win over the rules above.
 # ---------------------------------------------------------------------------
 !**/.gitkeep
+
+# Retired in-house detectors and their analysis scripts. Removed from the
+# working tree to keep the checkout to published methods only; recover with
+#   git checkout 1d32f97 -- src/aiforensics/detectors/unpublished scripts/unpublished

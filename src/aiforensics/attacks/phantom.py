@@ -8,15 +8,19 @@
     https://arxiv.org/abs/2405.20485 · HTML https://arxiv.org/html/2405.20485v3
     DOI (arXiv/DataCite): 10.48550/arXiv.2405.20485
 
-Venue, stated no more strongly than it can be sourced
------------------------------------------------------
-The arXiv HTML carries an author-supplied publication note reading
-``Journal: TAISAP``, which names the intended journal (ACM Transactions on AI
-Security and Privacy) and nothing more. Checked 2026-08-19: the abs page has
-**no** ``journal_ref`` and **no** publisher DOI; ``doi.org/10.1145/3796729``
-returns HTTP 404 and ``api.crossref.org/works/10.1145/3796729`` returns HTTP
-404. No volume, year or publisher DOI is therefore citable, and none is
-asserted here or in the ``meta`` this module writes into poisoned documents.
+Venue
+-----
+**Accepted to ACM Transactions on AI Security and Privacy (TAISAP)**, confirmed
+by the project lead; the arXiv HTML carries the matching author pubnote
+``Journal: TAISAP``.
+
+The volume, year and publisher DOI are deliberately **not** asserted here. As
+of 2026-08-19 the arXiv abs page still shows no ``journal_ref`` and no
+publisher DOI, and ``doi.org/10.1145/3796729`` and
+``api.crossref.org/works/10.1145/3796729`` both return HTTP 404 — consistent
+with a DOI not yet assigned or not yet live. Cite the arXiv version until a
+resolvable record exists, then update this block and the ``meta`` string this
+module stamps into every poisoned document.
 Every numbered claim below was fetched from v3 of the arXiv HTML.
 
 **No official implementation exists.** The paper's ethics statement is explicit:
@@ -1230,9 +1234,9 @@ def phantom_documents(
             "paper": (
                 "Chaudhari et al., Phantom: General Backdoor Attacks on "
                 "Retrieval Augmented Language Generation, arXiv:2405.20485v3 "
-                "[cs.CR], 1 Oct 2025, DOI 10.48550/arXiv.2405.20485; arXiv "
-                "pubnote names ACM TAISAP as the target journal "
-                "(volume/year/publisher DOI unverified)"
+                "[cs.CR], 1 Oct 2025, DOI 10.48550/arXiv.2405.20485; accepted "
+                "to ACM Trans. on AI Security and Privacy (TAISAP) "
+                "(volume/publisher DOI not yet resolvable)"
             ),
             "stage": "retrieval-only (s_ret; s_gen from §4.2 not implemented)",
             # No single target query exists — that is the attack's defining
