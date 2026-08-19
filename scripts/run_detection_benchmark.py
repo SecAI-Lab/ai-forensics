@@ -136,9 +136,8 @@ def main() -> int:
     print(f"detectors: {keys}\n")
 
     model = tok = None
-    # hybrid fuses perplexity by default, so it needs the LM too.
-    if any(k in {"perplexity", "hybrid", "npas", "reliability", "consensus",
-                 "cascade", "query-gate", "fdr-control"} for k in keys):
+    # generation-side detectors need the LM.
+    if any(k in {"perplexity", "npas", "reliability"} for k in keys):
         from aiforensics.models.llm import load_llm
         model, tok = load_llm(args.generator)
 

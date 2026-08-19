@@ -631,12 +631,8 @@ _DETECTOR_CATEGORY: dict[str, str] = {}
 #: is side-effect-only (each registers its detectors) and must stay cheap: heavy
 #: third-party dependencies belong inside ``__init__``, not at module scope, so
 #: that listing detectors never fails on a machine missing an optional package.
-_BUILTIN_MODULES = ("rag_defense", "rag_similarity", "rag_isolation",
-                    "rag_agreement", "rag_perplexity", "rag_hybrid",
-                    "rag_gmtp", "rag_cleanbase",
-                    "rag_defense_score", "rag_fdr", "rag_consensus",
-                    "rag_cascade", "rag_query_gate",
-                    "rag_npas", "rag_reliability")
+_BUILTIN_MODULES = ("rag_defense", "rag_gmtp", "rag_npas", "rag_perplexity",
+                    "rag_reliability")
 _builtins_loaded = False
 
 

@@ -172,7 +172,7 @@ def test_describe_datasets_is_a_table() -> None:
 # detectors
 # --------------------------------------------------------------------------- #
 def test_implemented_detectors_are_the_rag_defense_set_plus_the_baseline() -> None:
-    """RAG defences are implemented; the other axes are still open slots.
+    """Only PUBLISHED RAG defences are registered; other axes are open slots.
 
     The rag-defense category is the first work package, so it has real
     detectors. input-anomaly, feature-space and neuron-activation are still
@@ -181,9 +181,7 @@ def test_implemented_detectors_are_the_rag_defense_set_plus_the_baseline() -> No
     """
     assert det.list_detectors("baseline") == ["random"]
     assert set(det.list_detectors("rag-defense")) == {
-        "cascade", "cleanbase", "consensus", "fdr-control", "gmtp", "hybrid",
-        "knn-isolation", "npas", "passage-agreement", "perplexity", "query-gate",
-        "query-similarity", "ragdefender", "ragdefender-score", "reliability",
+        "gmtp", "npas", "perplexity", "ragdefender", "reliability",
     }
     for empty in ("input-anomaly", "feature-space", "neuron-activation"):
         assert det.list_detectors(empty) == [], f"{empty} unexpectedly has an implementation"

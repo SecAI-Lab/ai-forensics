@@ -4,10 +4,10 @@ Every detector benchmarked so far is *relative within the retrieved set*:
 
 * NPAS normalises attention across the set, so its scores sum to 100;
 * ReliabilityRAG compares passages against each other via NLI contradiction;
-* passage-agreement measures mutual similarity;
-* RAGDefender contrasts an adversarial group against a benign one.
+* RAGDefender contrasts an adversarial group against a benign one;
+* GMTP is the exception — it scores each passage on its own.
 
-All four therefore need something to compare against. The number of **benign**
+The first three therefore need something to compare against. The number of **benign**
 passages surviving in the top-k is thus the hidden variable behind every result,
 and it is not simply ``k - N``: retrieval decides how many of the injected
 passages actually surface, and that varies per query.
@@ -40,7 +40,7 @@ from aiforensics.detectors import get_detector
 from aiforensics.metrics.detection import detection_metrics
 
 TARGETS = RAW_DIR / "poisonedrag_nq_targets.json"
-DETECTORS = ("npas", "reliability", "passage-agreement", "query-similarity", "ragdefender")
+DETECTORS = ("gmtp", "npas", "ragdefender", "reliability")
 
 
 def main() -> int:

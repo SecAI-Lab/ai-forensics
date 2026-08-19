@@ -110,7 +110,7 @@ def main() -> int:
 
     keys = args.detectors or list_detectors("rag-defense")
     model = tok = None
-    if any(k in {"perplexity", "hybrid"} for k in keys):
+    if any(k in {"perplexity", "npas", "reliability"} for k in keys):
         from aiforensics.models.llm import load_llm
         model, tok = load_llm(args.generator)
 
