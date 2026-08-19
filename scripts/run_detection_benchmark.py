@@ -44,7 +44,7 @@ from aiforensics.metrics.detection import detection_metrics, pr_auc, roc_auc
 TARGETS = RAW_DIR / "poisonedrag_nq_targets.json"
 
 
-def build_corpus(qids, n_background, encoder):
+def build_corpus(qids, n_background, encoder, normalize=True):
     """Corpus containing every gold passage for the targets, plus background."""
     qrels = load_qrels("nq", split="test")
     gold = {d for q in qids for d in qrels.get(q, {})}
@@ -56,7 +56,10 @@ def build_corpus(qids, n_background, encoder):
             keep.append(doc); bg += 1
     found = sum(1 for d in keep if d.doc_id in gold)
     print(f"corpus: {len(keep)} docs ({found}/{len(gold)} gold passages present)")
-    return build_index(keep, encoder=encoder, corpus_name=f"bench-{len(keep)}")
+    store = build_index(keep, encoder=encoder, corpus_name=f"bench-{len(keep)}",
+                        normalize=normalize)
+    print(f"retrieval similarity: {store.similarity}")
+    return store
 
 
 def evaluate(detector, store, targets, qids, k):
@@ -104,6 +107,11 @@ def main() -> int:
     ap.add_argument("--detectors", nargs="*", default=None,
                     help="registry keys; default = every rag-defense detector")
     ap.add_argument("--encoder", default="sentence-transformers/all-MiniLM-L6-v2")
+    ap.add_argument("--normalize", dest="normalize", action="store_true", default=True,
+                    help="cosine retrieval (default)")
+    ap.add_argument("--dot", dest="normalize", action="store_false",
+                    help="dot-product retrieval — the PoisonedRAG-faithful setting "
+                         "with facebook/contriever (see scripts/verify_retrievers.py)")
     ap.add_argument("--generator", default="qwen3-1.7b")
     ap.add_argument("--target-fpr", type=float, default=0.05,
                     help="alarm budget on CLEAN data used to calibrate each threshold")
@@ -115,7 +123,7 @@ def main() -> int:
     qids = list(targets)[: args.queries]
     attacked = set(qids[: args.attacked])
 
-    clean = build_corpus(qids, args.background, args.encoder)
+    clean = build_corpus(qids, args.background, args.encoder, args.normalize)
     clean_path = clean.save("bench-clean")
     poisoned = RagStore.load(clean_path)
     for qid in sorted(attacked):

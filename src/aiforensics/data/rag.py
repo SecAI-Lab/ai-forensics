@@ -574,8 +574,17 @@ def load_encoder(
     modules = [type(m).__name__ for _, m in model.named_children()]
     if modules[1:2] == ["Pooling"] and "Normalize" not in modules:
         pooling = list(model.children())[1]
-        mode = getattr(pooling, "get_pooling_mode_str", lambda: "?")()
-        if not getattr(pooling, "pooling_mode_mean_tokens", False):
+        # sentence-transformers changed this API: older releases expose one
+        # boolean per mode (``pooling_mode_mean_tokens``), newer ones a single
+        # ``pooling_mode`` string. Read both, or the check reports '?' on a
+        # perfectly good encoder and cries wolf on every load.
+        mode = getattr(pooling, "pooling_mode", None)
+        if mode is None:
+            getter = getattr(pooling, "get_pooling_mode_str", None)
+            mode = getter() if callable(getter) else None
+        if mode is None:
+            mode = "mean" if getattr(pooling, "pooling_mode_mean_tokens", False) else "?"
+        if mode != "mean":
             log.warning(
                 "encoder %s pools with %r, not mean-over-attention-mask; if this is "
                 "a Contriever-family model the embeddings will NOT match the "
