@@ -632,7 +632,8 @@ _DETECTOR_CATEGORY: dict[str, str] = {}
 #: third-party dependencies belong inside ``__init__``, not at module scope, so
 #: that listing detectors never fails on a machine missing an optional package.
 _BUILTIN_MODULES = ("rag_defense", "rag_gmtp", "rag_npas", "rag_perplexity",
-                    "rag_reliability")
+                    "rag_reliability", "feature_space",
+                    "neuron_activation", "input_anomaly")
 _builtins_loaded = False
 
 

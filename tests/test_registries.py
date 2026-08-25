@@ -171,20 +171,27 @@ def test_describe_datasets_is_a_table() -> None:
 # --------------------------------------------------------------------------- #
 # detectors
 # --------------------------------------------------------------------------- #
-def test_implemented_detectors_are_the_rag_defense_set_plus_the_baseline() -> None:
-    """Only PUBLISHED RAG defences are registered; other axes are open slots.
+def test_implemented_detectors_match_the_published_work_packages() -> None:
+    """Every registered detector reproduces a published method.
 
-    The rag-defense category is the first work package, so it has real
-    detectors. input-anomaly, feature-space and neuron-activation are still
-    unimplemented on purpose — that is the contribution seam for the rest of the
-    team, and this test fails loudly if a slot is filled without updating the plan.
+    Two work packages are built: RAG poisoning defences, and the
+    representation-based backdoor detectors (feature-space and
+    neuron-activation) with ONION as their input-level control. ``rap`` is the
+    one technique still deliberately unimplemented, so this test fails loudly if
+    a slot is filled without updating the plan.
     """
     assert det.list_detectors("baseline") == ["random"]
     assert set(det.list_detectors("rag-defense")) == {
         "gmtp", "npas", "perplexity", "ragdefender", "reliability",
     }
-    for empty in ("input-anomaly", "feature-space", "neuron-activation"):
-        assert det.list_detectors(empty) == [], f"{empty} unexpectedly has an implementation"
+    assert set(det.list_detectors("feature-space")) == {
+        "activation-clustering", "hidden-svd", "spectral-signature",
+    }
+    assert set(det.list_detectors("neuron-activation")) == {"logit-lens", "nla", "sae"}
+    # ONION is implemented as the input-level control the representation-based
+    # detectors are measured against; RAP is still an open slot.
+    assert det.list_detectors("input-anomaly") == ["onion"]
+    assert "rap" not in det.list_detectors("input-anomaly")
 
 
 def test_categories_cover_the_plans_detection_axes() -> None:
@@ -212,7 +219,7 @@ def test_techniques_sit_under_the_right_category() -> None:
 
 def test_planned_technique_raises_not_implemented_with_its_reserved_module() -> None:
     with pytest.raises(NotImplementedError) as excinfo:
-        det.get_detector("onion")
+        det.get_detector("rap")
     message = str(excinfo.value)
     assert "input_anomaly.py" in message
     assert "input-anomaly" in message
@@ -220,7 +227,8 @@ def test_planned_technique_raises_not_implemented_with_its_reserved_module() -> 
 
 def test_detector_tree_reports_implementation_coverage() -> None:
     tree = det.detector_tree()
-    assert tree["input-anomaly"]["techniques"]["onion"]["implemented"] is False
+    assert tree["input-anomaly"]["techniques"]["rap"]["implemented"] is False
+    assert tree["input-anomaly"]["techniques"]["onion"]["implemented"] is True
     assert tree["baseline"]["techniques"]["random"]["implemented"] is True
     rendered = det.format_tree()
     assert "input-anomaly" in rendered and "onion" in rendered
@@ -290,6 +298,11 @@ def _toy(key: str, modality: str = "text"):
 
 
 def test_registering_a_planned_technique_infers_its_category(clean_registry) -> None:
+    # 'onion' now ships an implementation; drop it so the inference path (which
+    # only runs for an unregistered key) is what is under test here. The
+    # clean_registry fixture puts the real one back.
+    det._REGISTRY.pop("onion", None)
+    det._DETECTOR_CATEGORY.pop("onion", None)
     det.register_detector("onion", _toy("onion"))
     assert det.category_of("onion") == "input-anomaly"
     assert det.list_detectors("input-anomaly") == ["onion"]
@@ -334,6 +347,10 @@ def test_a_technique_key_cannot_be_claimed_by_two_categories(clean_registry) -> 
 
 
 def test_category_ensemble_combines_every_child(clean_registry) -> None:
+    # Replace the real ONION with a toy so the ensemble maths is tested without
+    # loading a language model.
+    det._REGISTRY.pop("onion", None)
+    det._DETECTOR_CATEGORY.pop("onion", None)
     det.register_detector("onion", _toy("onion"))
     det.register_detector("rap", _toy("rap"))
     ensemble = det.CategoryEnsemble("input-anomaly", threshold=0.5)
@@ -345,8 +362,16 @@ def test_category_ensemble_combines_every_child(clean_registry) -> None:
 
 
 def test_ensemble_on_an_empty_category_says_so(clean_registry) -> None:
+    # Every shipped category now has at least one implementation, so the empty
+    # case is constructed rather than borrowed from one that happens to be bare.
+    det.register_category(det.DetectorCategory(
+        key="not-yet-built", name="Unbuilt", modality="text", evidence="none",
+        module="aiforensics/detectors/not_yet_built.py",
+        description="reserved, nothing implemented",
+        techniques=(det.Technique("placeholder", "reserved"),),
+    ))
     with pytest.raises(LookupError, match="no implemented detectors"):
-        det.CategoryEnsemble("neuron-activation")
+        det.CategoryEnsemble("not-yet-built")
 
 
 # --------------------------------------------------------------------------- #

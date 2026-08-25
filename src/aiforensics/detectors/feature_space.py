@@ -1,0 +1,384 @@
+"""Feature-space backdoor detection — anomaly in the representation geometry.
+
+These techniques do not read the input text. They take the model's *internal
+representations* of a pool of examples and look for the geometric trace a
+backdoor leaves behind: because a backdoored model must map every triggered
+input to one target label regardless of content, triggered examples get pushed
+together into a tight, displaced cluster that clean examples of the same label
+do not form.
+
+Implemented:
+
+* :class:`SpectralSignatureDetector` —
+
+      Brandon Tran, Jerry Li, Aleksander Madry. "Spectral Signatures in Backdoor
+      Attacks." NeurIPS 2018, 8000-8010. arXiv:1811.00636
+
+* :class:`ActivationClusteringDetector` —
+
+      Bryant Chen et al. "Detecting Backdoor Attacks on Deep Neural Networks by
+      Activation Clustering." AAAI 2019 Workshop on Artificial Intelligence
+      Safety (SafeAI). arXiv:1811.03728
+
+* :class:`HiddenSvdDetector` — subspace reconstruction error against a basis
+  fitted on data believed clean.
+
+**Three properties of this family decide how the results must be read.**
+
+*They are pool-level, not per-example.* Every score here is computed against the
+other examples in the pool: the mean that gets subtracted, the singular vector
+that gets projected onto, the clusters that get fitted. Handing one example in
+isolation is meaningless. This also means a score is only comparable to other
+scores computed in the *same* call — which is the exact trap that produced three
+separate chance-level results in this project's RAG package. Pool once, score
+once.
+
+*They assume a per-class pool.* The published methods run per output class,
+because that is what makes "these examples share a label but not a cause"
+detectable. For a generative LM there is no built-in class axis, so the caller
+supplies one via ``labels`` (for a verbalised classification task, the label
+index is the natural choice).
+
+*Spectral signatures needs the poison rate.* The published removal rule strips
+the top ``1.5 * epsilon`` fraction, where epsilon is the contamination rate the
+defender does not know. That is a genuine weakness in an unknown-poisoning
+setting, so :meth:`score` returns the raw statistic and leaves thresholding to
+the harness, where it is calibrated on clean data like every other detector
+here.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import numpy as np
+
+from .base import Detector, register_detector
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "ActivationClusteringDetector",
+    "HiddenSvdDetector",
+    "SpectralSignatureDetector",
+    "as_matrix",
+]
+
+
+def as_matrix(samples: Any) -> tuple[np.ndarray, np.ndarray | None]:
+    """Normalise detector input to ``(representations, labels_or_None)``.
+
+    Accepts a plain ``(n, d)`` array, a ``(representations, labels)`` pair, or a
+    mapping with ``"representations"`` / ``"labels"`` keys. Torch tensors are
+    accepted and moved to CPU float64 — these estimators run in numpy/scipy and
+    bfloat16 cannot cross that boundary.
+
+    Raises:
+        ValueError: If the array is not 2-D, or labels do not align with rows.
+    """
+    labels = None
+    if isinstance(samples, dict):
+        reps, labels = samples["representations"], samples.get("labels")
+    elif isinstance(samples, tuple) and len(samples) == 2:
+        reps, labels = samples
+    else:
+        reps = samples
+
+    if hasattr(reps, "detach"):
+        reps = reps.detach().to("cpu", copy=False)
+    reps = np.asarray(reps, dtype=np.float64)
+    if reps.ndim != 2:
+        raise ValueError(
+            f"representations must be 2-D (n_examples, hidden), got shape {reps.shape}. "
+            "Sequence-shaped hidden states must be pooled first — see "
+            "aiforensics.models.llm.HiddenStates.pooled(), which is mask-aware; "
+            "pooling by hand over padded positions skews every estimate here."
+        )
+    if labels is not None:
+        if hasattr(labels, "detach"):
+            labels = labels.detach().to("cpu", copy=False)
+        labels = np.asarray(labels).reshape(-1)
+        if len(labels) != reps.shape[0]:
+            raise ValueError(
+                f"labels ({len(labels)}) do not align with representations "
+                f"({reps.shape[0]})"
+            )
+    return reps, labels
+
+
+def _groups(reps: np.ndarray, labels: np.ndarray | None) -> list[np.ndarray]:
+    """Row-index groups to analyse separately — one per class, or one pool."""
+    if labels is None:
+        return [np.arange(reps.shape[0])]
+    return [np.flatnonzero(labels == y) for y in np.unique(labels)]
+
+
+@register_detector("spectral-signature", category="feature-space")
+class SpectralSignatureDetector(Detector):
+    """Top-singular-vector outlier score over per-class representations.
+
+    The method (Tran et al., NeurIPS 2018): within one class, centre the
+    representation matrix and project each example onto the top right singular
+    vector; a backdoor's target-class pool is a mixture of clean examples and a
+    displaced poisoned sub-population, and that displacement dominates the
+    leading direction, so poisoned examples take extreme projections.
+
+    Args:
+        n_components: Singular directions to combine. The paper uses 1; taking
+            the max squared projection over the top few is a common
+            robustification and is off by default so the result stays faithful.
+        center: Subtract the group mean (the paper's ``R̂``). Leave on.
+    """
+
+    name = "spectral-signature"
+    category = "feature-space"
+    modality = "activations"
+    requires_fit = False
+
+    def __init__(
+        self,
+        *,
+        n_components: int = 1,
+        center: bool = True,
+        threshold: float | None = None,
+        **config: Any,
+    ) -> None:
+        super().__init__(
+            threshold=threshold, n_components=n_components, center=center, **config
+        )
+        if n_components < 1:
+            raise ValueError(f"n_components must be >= 1, got {n_components}")
+        self.n_components = int(n_components)
+        self.center = bool(center)
+
+    def score(self, samples: Any) -> np.ndarray:
+        """Squared projection onto the leading singular direction, per example.
+
+        Args:
+            samples: ``(n, d)`` representations, or ``(representations, labels)``
+                to run the published per-class variant.
+
+        Returns:
+            ``(n,)`` scores; higher = more anomalous.
+        """
+        reps, labels = as_matrix(samples)
+        out = np.zeros(reps.shape[0], dtype=np.float64)
+        for idx in _groups(reps, labels):
+            if len(idx) < 2:
+                continue                      # no geometry to speak of
+            block = reps[idx]
+            if self.center:
+                block = block - block.mean(axis=0, keepdims=True)
+            k = min(self.n_components, *block.shape)
+            # SVD of the centred matrix; rows project onto right singular vectors.
+            _u, _s, vt = np.linalg.svd(block, full_matrices=False)
+            proj = block @ vt[:k].T           # (n_group, k)
+            out[idx] = (proj ** 2).max(axis=1)
+        return out
+
+
+@register_detector("activation-clustering", category="feature-space")
+class ActivationClusteringDetector(Detector):
+    """Two-means clustering of per-class representations (Chen et al., 2019).
+
+    Project a class's representations to a low-dimensional space, split them in
+    two, and treat the *smaller* cluster as the suspected poison. The published
+    procedure uses ICA; PCA is offered because it is deterministic and far
+    cheaper, and on these representations the two agree closely.
+
+    The per-example score is the **silhouette-weighted** distance to the larger
+    cluster's centroid, which turns the paper's hard cluster assignment into a
+    graded score. Two reasons that matters here: a hard assignment gives a
+    degenerate ROC with a single operating point, and the silhouette weight
+    encodes the paper's own signal that a *well-separated* split is evidence of
+    poisoning while a poor split is evidence of none.
+
+    Args:
+        n_components: Dimensions to project to before clustering (paper: 10).
+        projection: ``"ica"`` (paper) or ``"pca"`` (deterministic, faster).
+        seed: Seed for ICA and k-means.
+    """
+
+    name = "activation-clustering"
+    category = "feature-space"
+    modality = "activations"
+    requires_fit = False
+
+    def __init__(
+        self,
+        *,
+        n_components: int = 10,
+        projection: str = "pca",
+        seed: int = 1337,
+        threshold: float | None = None,
+        **config: Any,
+    ) -> None:
+        super().__init__(
+            threshold=threshold, n_components=n_components,
+            projection=projection, seed=seed, **config,
+        )
+        if projection not in {"ica", "pca"}:
+            raise ValueError(f"projection must be 'ica' or 'pca', got {projection!r}")
+        self.n_components = int(n_components)
+        self.projection = projection
+        self.seed = int(seed)
+
+    def _project(self, block: np.ndarray) -> np.ndarray:
+        k = min(self.n_components, *block.shape)
+        if self.projection == "ica":
+            from sklearn.decomposition import FastICA
+            return FastICA(n_components=k, random_state=self.seed,
+                           whiten="unit-variance", max_iter=1000).fit_transform(block)
+        from sklearn.decomposition import PCA
+        return PCA(n_components=k, random_state=self.seed).fit_transform(block)
+
+    def score(self, samples: Any) -> np.ndarray:
+        """Graded suspicion from a 2-means split of each class's activations."""
+        from sklearn.cluster import KMeans
+        from sklearn.metrics import silhouette_score
+
+        reps, labels = as_matrix(samples)
+        out = np.zeros(reps.shape[0], dtype=np.float64)
+        for idx in _groups(reps, labels):
+            if len(idx) < 4:                 # silhouette is undefined below this
+                continue
+            block = reps[idx]
+            try:
+                proj = self._project(block)
+            except Exception as exc:
+                logger.warning("projection failed on a group of %d: %s", len(idx), exc)
+                continue
+            km = KMeans(n_clusters=2, n_init=10, random_state=self.seed).fit(proj)
+            assign = km.labels_
+            counts = np.bincount(assign, minlength=2)
+            if counts.min() == 0:
+                continue
+            small = int(np.argmin(counts))
+            # Separation quality gates the whole group: a class that does not
+            # split cleanly is evidence of no poison, not weak evidence of some.
+            try:
+                sil = float(silhouette_score(proj, assign))
+            except Exception:
+                sil = 0.0
+            sil = max(sil, 0.0)
+            big_centroid = km.cluster_centers_[1 - small]
+            dist = np.linalg.norm(proj - big_centroid, axis=1)
+            # Only the minority cluster carries suspicion, scaled by separation.
+            out[idx] = sil * dist * (assign == small)
+        return out
+
+
+@register_detector("hidden-svd", category="feature-space")
+class HiddenSvdDetector(Detector):
+    """Reconstruction error against a subspace fitted on clean representations.
+
+    Unlike the two above, this one is *supervised by cleanliness*: it fits a
+    low-rank basis on data believed clean, then scores any example by how much
+    of it falls outside that subspace. That makes it the natural fit for this
+    project's threat model, where the investigator can plausibly obtain a clean
+    reference but never labelled poison.
+
+    Falling back to fitting on the scored pool itself (no :meth:`fit` call) is
+    supported but weaker, and is what the ``requires_fit`` flag is about: the
+    poison is then inside the basis it is being measured against.
+
+    **Choose the statistic to match the artifact you expect.** ``mode="residual"``
+    measures only the distance *outside* the clean subspace, so it finds an
+    example that lies off the clean manifold but is blind to one displaced
+    *along* a direction the clean data already spans. ``mode="mahalanobis"``
+    (the default) measures both, each normalised by the clean spread so the two
+    terms are in the same units — without that normalisation the sum is a raw
+    residual added to a whitened coordinate, which is dimensionally meaningless
+    and silently dominated by whichever term happens to be larger.
+
+    Neither statistic can separate a poisoned cluster that sits *closer* to the
+    clean centroid than clean data does — a tight cluster in high dimensions
+    does exactly that. Spectral signatures catches that case and this does not;
+    they are complementary, which is why both are in this category.
+
+    Args:
+        n_components: Rank of the retained subspace.
+        mode: ``"mahalanobis"`` (whitened in-subspace distance + normalised
+            residual) or ``"residual"`` (off-subspace distance only, the plain
+            reconstruction error).
+    """
+
+    name = "hidden-svd"
+    category = "feature-space"
+    modality = "activations"
+    requires_fit = False
+
+    def __init__(
+        self,
+        *,
+        n_components: int = 16,
+        mode: str = "mahalanobis",
+        threshold: float | None = None,
+        **config: Any,
+    ) -> None:
+        super().__init__(
+            threshold=threshold, n_components=n_components, mode=mode, **config
+        )
+        if mode not in {"mahalanobis", "residual"}:
+            raise ValueError(
+                f"mode must be 'mahalanobis' or 'residual', got {mode!r}"
+            )
+        self.n_components = int(n_components)
+        self.mode = mode
+        self._mean: np.ndarray | None = None
+        self._basis: np.ndarray | None = None
+        self._scale: np.ndarray | None = None
+        self._residual_scale: float = 1.0
+
+    def fit(self, clean: Any) -> HiddenSvdDetector:
+        """Fit the clean subspace.
+
+        Args:
+            clean: Representations believed clean, in any form
+                :func:`as_matrix` accepts. Labels are ignored — the basis is
+                global on purpose, so a class with few clean examples still
+                gets a well-conditioned reference.
+        """
+        reps, _ = as_matrix(clean)
+        if reps.shape[0] < 2:
+            raise ValueError("need at least 2 clean examples to fit a subspace")
+        self._mean = reps.mean(axis=0, keepdims=True)
+        centred = reps - self._mean
+        k = min(self.n_components, *centred.shape)
+        _u, s, vt = np.linalg.svd(centred, full_matrices=False)
+        self._basis = vt[:k]
+        # Per-component clean standard deviation. Guarded so a degenerate
+        # direction cannot make the whitened score infinite.
+        denom = np.sqrt(max(reps.shape[0] - 1, 1))
+        self._scale = np.maximum(s[:k] / denom, 1e-12)
+        # Typical clean residual, so the off-subspace term is expressed in the
+        # same units as the whitened in-subspace term rather than raw distance.
+        resid = centred - (centred @ self._basis.T) @ self._basis
+        self._residual_scale = max(float(np.linalg.norm(resid, axis=1).mean()), 1e-12)
+        return self
+
+    def score(self, samples: Any) -> np.ndarray:
+        """Residual norm outside the fitted subspace, per example."""
+        reps, _ = as_matrix(samples)
+        if self._basis is None:
+            logger.warning(
+                "hidden-svd scored without fit(): fitting the basis on the pool "
+                "being scored, so any poison in it is part of its own reference. "
+                "Call fit(clean_representations) for the intended protocol."
+            )
+            self.fit(reps)
+        assert self._mean is not None and self._basis is not None
+        centred = reps - self._mean
+        coords = centred @ self._basis.T
+        residual = centred - coords @ self._basis
+        residual_norm = np.linalg.norm(residual, axis=1)
+        if self.mode == "residual":
+            return residual_norm
+        assert self._scale is not None
+        # Both terms unitless: coordinates in clean standard deviations, and the
+        # residual as a multiple of the typical clean residual.
+        return np.sqrt(
+            ((coords / self._scale) ** 2).sum(axis=1)
+            + (residual_norm / self._residual_scale) ** 2
+        )

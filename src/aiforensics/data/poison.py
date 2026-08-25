@@ -1055,6 +1055,12 @@ def _labels_of(rows: Any, label_column: str) -> np.ndarray:
     return np.asarray([r[label_column] for r in rows], dtype=np.int64)
 
 
+def _payload_of(ds: Any, index: int, column: str) -> Any:
+    """Read one row's payload from an HF Dataset or a list of dicts."""
+    row = ds[index]
+    return row[column] if isinstance(row, dict) else row
+
+
 def poison_dataset(
     ds: Any,
     fraction: float,
@@ -1268,6 +1274,37 @@ def poison_dataset(
             classes=wrapper.classes,
             key=wrapper.key,
         )
+
+    # --- post-condition: the payload actually changed --------------------
+    #
+    # A trigger function that returns its input unchanged is not a loud
+    # failure, it is a silent one: the row is still recorded in
+    # `poisoned_indices`, so the manifest claims a poisoned sample that carries
+    # no trigger. Every downstream detection rate is then divided by a
+    # denominator that includes clean rows, and the loss is invisible.
+    #
+    # The realistic way to hit this is a lookup-table trigger (the syntactic and
+    # style classes are table-driven) whose keys were normalised differently
+    # from the dataset text — GLUE's trailing space on every sentence is exactly
+    # such a mismatch. Verified after the map rather than inside it, so the
+    # check is unaffected by `num_proc` sharding.
+    if array_ds is None and chosen_set:
+        unchanged = [
+            int(i) for i in chosen
+            if _payload_of(poisoned, int(i), payload_column)
+            == _payload_of(ds, int(i), payload_column)
+        ]
+        if unchanged:
+            preview = ", ".join(str(i) for i in unchanged[:5])
+            raise ValueError(
+                f"trigger_fn left {len(unchanged)}/{len(chosen)} chosen samples "
+                f"unchanged (indices {preview}{'...' if len(unchanged) > 5 else ''}). "
+                "Those rows would be recorded as poisoned while carrying no "
+                "trigger, so the manifest — and every detection rate scored "
+                "against it — would be wrong. If the trigger is table-driven, "
+                "the lookup keys most likely disagree with the dataset text on "
+                "whitespace or case."
+            )
 
     # --- record the ground truth ----------------------------------------
     spec = trigger if trigger is not None else getattr(trigger_fn, "trigger_spec", None)
