@@ -609,9 +609,14 @@ def calibrate_threshold_on_clean(
 
     Returns:
         A threshold ``t`` such that ``mean(clean_scores >= t) <= target_fpr``.
-        If even the largest score exceeds the budget (every clean point ties at
-        the maximum), returns ``inf``, which flags nothing — an honest refusal
-        rather than a silently over-firing detector.
+        When no clean score itself meets the budget — every clean point ties at
+        the maximum, which happens whenever a detector is identically zero on
+        clean data — the threshold sits *just above* the largest clean score.
+        That spends none of the budget and still flags anything above it, which
+        matters: a detector can separate the classes perfectly and have a
+        degenerate clean distribution, and returning ``inf`` there would throw a
+        working detector away. Measured on this project's activation-clustering
+        row: ROC-AUC 1.000 alongside a reported detection accuracy of 0.000.
 
     Raises:
         ValueError: If ``clean_scores`` is empty or ``target_fpr`` is not in
@@ -631,7 +636,11 @@ def calibrate_threshold_on_clean(
     values = np.unique(scores)
     rates = (scores[None, :] >= values[:, None]).mean(axis=1)
     ok = np.flatnonzero(rates <= target_fpr)
-    return float(values[ok[0]]) if ok.size else float("inf")
+    if ok.size:
+        return float(values[ok[0]])
+    # No clean score meets the budget. Sit immediately above the largest one:
+    # realised clean flag rate 0, and anything scoring higher still fires.
+    return float(np.nextafter(values[-1], np.inf))
 
 
 def threshold_sweep(

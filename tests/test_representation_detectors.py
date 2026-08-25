@@ -245,17 +245,23 @@ def test_calibration_matches_the_quantile_when_scores_are_continuous() -> None:
     assert (clean >= thr).mean() == pytest.approx(0.05, abs=0.002)
 
 
-def test_calibration_refuses_rather_than_over_firing() -> None:
-    """When no threshold can meet the budget, flag nothing and say so.
+def test_calibration_sits_above_a_degenerate_clean_distribution() -> None:
+    """A detector that is identically zero on clean data still gets a threshold.
 
-    A constant clean score cannot be split at any rate below 100%. Returning
-    ``inf`` makes the detector silent, which is honest; returning the constant
-    would flag every clean sample while claiming a 5% budget.
+    No clean score can meet a 5% budget when every clean point ties, but placing
+    the threshold just above the clean maximum spends none of the budget and
+    still fires on anything higher. Returning ``inf`` instead would discard a
+    working detector — measured here as ROC-AUC 1.000 with a reported detection
+    accuracy of 0.000.
     """
     from aiforensics.metrics.detection import calibrate_threshold_on_clean
 
-    assert calibrate_threshold_on_clean(np.ones(100), 0.05) == float("inf")
-    assert (np.ones(100) >= float("inf")).mean() == 0.0
+    clean = np.zeros(100)
+    thr = calibrate_threshold_on_clean(clean, 0.05)
+    assert np.isfinite(thr)
+    assert (clean >= thr).mean() == 0.0            # spends none of the budget
+    poisoned = np.array([0.4, 1.2, 3.0])
+    assert (poisoned >= thr).mean() == 1.0         # and still detects
 
 
 def test_calibration_rejects_bad_input() -> None:
