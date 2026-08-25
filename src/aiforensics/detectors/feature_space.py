@@ -194,9 +194,25 @@ class ActivationClusteringDetector(Detector):
     encodes the paper's own signal that a *well-separated* split is evidence of
     poisoning while a poor split is evidence of none.
 
+    **The minority rule breaks when poison is not a minority.** The published
+    method assumes the poisoned examples form the *smaller* of the two clusters,
+    which holds at the poison rates a training set sees (1-20%) but not in an
+    evaluation pool balanced between triggered and clean inputs. At 250 versus
+    250 the smaller cluster is decided by a handful of examples, so which side
+    is scored becomes close to a coin flip — and the same detector can post a
+    ROC-AUC near 1.0 on one seed and near 0.0 on the next, with nothing
+    materially different between them.
+
+    ``symmetric=True`` removes the assumption by scoring distance to the nearer
+    centroid relative to the further one, so neither cluster is privileged. It
+    is a departure from the paper and is labelled as ours wherever reported. Use
+    the published rule when the poison really is a minority — a training-set
+    scan — and the symmetric rule when it may not be.
+
     Args:
         n_components: Dimensions to project to before clustering (paper: 10).
         projection: ``"ica"`` (paper) or ``"pca"`` (deterministic, faster).
+        symmetric: Score both clusters rather than only the smaller one.
         seed: Seed for ICA and k-means.
     """
 
@@ -210,18 +226,20 @@ class ActivationClusteringDetector(Detector):
         *,
         n_components: int = 10,
         projection: str = "pca",
+        symmetric: bool = False,
         seed: int = 1337,
         threshold: float | None = None,
         **config: Any,
     ) -> None:
         super().__init__(
             threshold=threshold, n_components=n_components,
-            projection=projection, seed=seed, **config,
+            projection=projection, symmetric=symmetric, seed=seed, **config,
         )
         if projection not in {"ica", "pca"}:
             raise ValueError(f"projection must be 'ica' or 'pca', got {projection!r}")
         self.n_components = int(n_components)
         self.projection = projection
+        self.symmetric = bool(symmetric)
         self.seed = int(seed)
 
     def _project(self, block: np.ndarray) -> np.ndarray:
@@ -262,10 +280,15 @@ class ActivationClusteringDetector(Detector):
             except Exception:
                 sil = 0.0
             sil = max(sil, 0.0)
-            big_centroid = km.cluster_centers_[1 - small]
-            dist = np.linalg.norm(proj - big_centroid, axis=1)
-            # Only the minority cluster carries suspicion, scaled by separation.
-            out[idx] = sil * dist * (assign == small)
+            d_small = np.linalg.norm(proj - km.cluster_centers_[small], axis=1)
+            d_big = np.linalg.norm(proj - km.cluster_centers_[1 - small], axis=1)
+            if self.symmetric:
+                # Neither cluster privileged: how much closer this example is to
+                # its own centroid than to the other, scaled by separation.
+                out[idx] = sil * np.abs(d_big - d_small)
+            else:
+                # The paper's rule: only the minority cluster carries suspicion.
+                out[idx] = sil * d_big * (assign == small)
         return out
 
 

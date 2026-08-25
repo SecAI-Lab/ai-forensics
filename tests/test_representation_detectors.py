@@ -320,3 +320,41 @@ def test_syntactic_is_capped_by_its_published_table() -> None:
         "syntactic must be capped well below the other classes; a controlled "
         "four-way comparison has to live at or under that cap"
     )
+
+
+def test_activation_clustering_minority_rule_is_base_rate_dependent() -> None:
+    """The published rule inverts when the poison is not a minority.
+
+    Chen et al. score the *smaller* of two clusters, which is sound at training
+    poison rates but not in an evaluation pool balanced between triggered and
+    clean inputs — there the smaller cluster is decided by a handful of examples.
+    Measured: ROC-AUC ~1.00 with 20 poisoned among 200 clean, and ~0.00 at
+    250 versus 250, on the same generator. The symmetric variant privileges
+    neither cluster and holds in both.
+
+    Pinned because the failure is silent and directional: it does not error, it
+    reports a confident number with the sign flipped.
+    """
+    from aiforensics.detectors.feature_space import ActivationClusteringDetector
+
+    def pool(n_clean, n_pois, seed, spread):
+        r = np.random.default_rng(seed)
+        clean = r.normal(size=(n_clean, 64))
+        direction = np.zeros(64)
+        direction[3] = 5.0
+        pois = r.normal(size=(n_pois, 64)) * spread + direction
+        X = np.vstack([clean, pois])
+        truth = np.zeros(len(X), dtype=bool)
+        truth[n_clean:] = True
+        return X, np.zeros(len(X), dtype=int), truth
+
+    X, y, truth = pool(200, 20, 0, 0.3)
+    assert roc_auc(truth, ActivationClusteringDetector(seed=0).score((X, y))) > 0.9
+
+    X, y, truth = pool(250, 250, 0, 0.5)
+    published = roc_auc(truth, ActivationClusteringDetector(seed=0).score((X, y)))
+    symmetric = roc_auc(
+        truth, ActivationClusteringDetector(seed=0, symmetric=True).score((X, y))
+    )
+    assert published < 0.2, "the minority rule is expected to invert here"
+    assert symmetric > 0.8, "the symmetric rule should survive a balanced pool"
