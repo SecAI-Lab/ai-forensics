@@ -49,7 +49,7 @@ def load_runs():
     for path in sorted(REPORT_DIR.glob("backdoor_detection_*.json")):
         try:
             d = json.loads(path.read_text())
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         cfg = d.get("config", {})
         key = (cfg.get("trigger"), cfg.get("poison_rate"), cfg.get("seed"))
