@@ -209,7 +209,8 @@ def main() -> int:
     dev_texts, _dev_labels = load_sst2_sentence("dev")
     te_texts, te_labels = load_sst2_sentence("test")
 
-    trig = build_trigger(args.trigger, tr_texts, split="train", seed=args.seed)
+    trig = build_trigger(args.trigger, tr_texts, split="train", seed=args.seed,
+                         target_label=args.target_label)
     cand = trig.candidates(tr_labels, args.target_label)
     k = round(args.poison_rate * len(tr_texts))
     if k > len(cand):
@@ -239,21 +240,24 @@ def main() -> int:
     # Evaluation pools. Triggered inputs are drawn from NON-target test rows so
     # a "success" is never ordinary correct classification, and the untriggered
     # counterparts are kept aligned so the ASR floor is paired.
+    # The test-split trigger table is built separately from the train one: the
+    # published tables differ in shape between splits, and build_trigger joins
+    # each correctly. Rows the table cannot carry are dropped, never passed
+    # through untriggered -- a "triggered" example with no trigger in it would
+    # sit in the positive class and silently depress every detection rate.
     nt_idx = [i for i, y in enumerate(te_labels) if y != args.target_label]
-    trig_te = build_trigger(args.trigger, te_texts, split="test", seed=args.seed) \
-        if args.trigger != "syntactic" else None
-    if trig_te is not None:
-        nt_idx = [i for i in nt_idx if trig_te.available[i]]
-        apply_fn = trig_te.fn
-    else:
-        # The SCPN test table is not row-aligned to the clean test split, so the
-        # train-split table is reused by text lookup and rows it cannot cover are
-        # dropped rather than silently passed through untriggered.
-        apply_fn = trig.fn
-        nt_idx = [i for i in nt_idx if te_texts[i] in trig.fn]
+    trig_te = build_trigger(args.trigger, te_texts, split="test", seed=args.seed,
+                            target_label=args.target_label)
+    nt_idx = [i for i in nt_idx if trig_te.available[i]]
+    apply_fn = trig_te.fn
     nt_idx = list(rng.permutation(nt_idx)[: args.eval_cap])
-    if not nt_idx:
-        raise SystemExit(f"no eligible triggered test rows for {args.trigger!r}")
+    if len(nt_idx) < 50:
+        raise SystemExit(
+            f"only {len(nt_idx)} eligible triggered test rows for "
+            f"{args.trigger!r} — too few to measure a detection rate against. "
+            "This is what a broken trigger-table join looks like: it does not "
+            "crash, it quietly leaves an evaluation pool of almost nothing."
+        )
     eval_clean = [te_texts[i] for i in nt_idx]
     eval_trig = [apply_fn(t) for t in eval_clean]
     print(f"eval pools     : {len(eval_clean)} clean / {len(eval_trig)} triggered")

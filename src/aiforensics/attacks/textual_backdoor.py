@@ -132,8 +132,25 @@ def load_sst2_sentence(split: str = "train") -> tuple[list[str], list[int]]:
     return [t for t, _ in rows], [y for _, y in rows]
 
 
-def _load_table(kind: str, split: str) -> dict[str, str]:
-    """Clean text -> transformed text, for a vendored trigger table."""
+def _load_table(kind: str, split: str, target_label: int = 1) -> dict[str, str]:
+    """Clean text -> transformed text, for a vendored trigger table.
+
+    The released tables come in two shapes and joining them the wrong way is
+    silent, not loud — it pairs unrelated sentences, or (worse) matches almost
+    nothing and leaves an evaluation pool of one example.
+
+    * **Row-aligned overlay.** ``bible/*`` and ``scpn/train`` have exactly as
+      many rows as the clean split, in the same order, so the join is positional
+      over every row.
+    * **Non-target subset.** ``scpn/test`` holds 912 rows against a 1,821-row
+      clean test split. Those 912 are the paraphrases of the clean rows whose
+      label is not the attacker's target, in order — verified by construction:
+      the clean test split has exactly 912 non-target rows, and every row of
+      ``scpn/test`` carries the target label. The join is positional over the
+      non-target rows only.
+
+    Anything else raises rather than guessing.
+    """
     sub = {"syntactic": "scpn", "style": "bible"}[kind]
     trig_path = SST2_SENTENCE_DIR / sub / f"{split}.tsv"
     clean_path = SST2_SENTENCE_DIR / "clean" / f"{split}.tsv"
@@ -142,16 +159,20 @@ def _load_table(kind: str, split: str) -> dict[str, str]:
             f"{trig_path} is missing. Run: python scripts/fetch_backdoor_data.py"
         )
     trig, clean = _read_tsv(trig_path), _read_tsv(clean_path)
-    if len(trig) != len(clean):
-        # The SCPN test table is a subset of the clean test split rather than a
-        # row-aligned overlay, so index-joining it would silently pair unrelated
-        # sentences. Only row-aligned tables can be joined by position.
-        raise ValueError(
-            f"{sub}/{split} has {len(trig)} rows but clean/{split} has "
-            f"{len(clean)}; these tables are not row-aligned and must not be "
-            "joined by index"
-        )
-    return {c: t for (c, _), (t, _) in zip(clean, trig, strict=True) if c != t}
+
+    if len(trig) == len(clean):
+        return {c: t for (c, _), (t, _) in zip(clean, trig, strict=True) if c != t}
+
+    nontarget = [c for c, y in clean if y != target_label]
+    if len(trig) == len(nontarget):
+        return {c: t for c, (t, _) in zip(nontarget, trig, strict=True) if c != t}
+
+    raise ValueError(
+        f"{sub}/{split} has {len(trig)} rows; clean/{split} has {len(clean)} "
+        f"({len(nontarget)} non-target at target_label={target_label}). The table "
+        "matches neither shape, so there is no safe way to join it — joining by "
+        "index would pair unrelated sentences."
+    )
 
 
 class TableTrigger:
@@ -240,6 +261,7 @@ def build_trigger(
     *,
     split: str = "train",
     seed: int = 1337,
+    target_label: int = 1,
 ) -> TextBackdoorSpec:
     """Construct one trigger class against a concrete split.
 
@@ -248,6 +270,8 @@ def build_trigger(
         texts: The split's texts, used to measure the candidate pool.
         split: Which vendored table to read for the table-driven classes.
         seed: Seed for the position-randomised word trigger.
+        target_label: The attacker's target class, needed to join the
+            non-target-subset tables (see :func:`_load_table`).
 
     Returns:
         A :class:`TextBackdoorSpec`.
@@ -283,7 +307,7 @@ def build_trigger(
                 "vendored": True,
             },
         )
-        table = TableTrigger(_load_table(kind, split), spec)
+        table = TableTrigger(_load_table(kind, split, target_label), spec)
         avail = table.available_for(texts)
         spec.params["table_rows"] = len(table)
         return TextBackdoorSpec(
