@@ -264,31 +264,59 @@ class LogitLensDetector(_CleanCalibrated):
 class NlaDetector(_CleanCalibrated):
     """Neuron-level activation analysis against a clean reference.
 
-    Descended from the neuron-level trojan defences — Fine-Pruning (Liu et al.,
-    RAID 2018) and ABS (Liu et al., CCS 2019) — which locate units that behave
-    abnormally on triggered input. Those methods deliver a per-*model* verdict
-    ("this network is trojaned"); this project's metric is per-*sample*, so the
-    adaptation here is explicit and should be labelled as such in any write-up:
-    the clean reference fixes each unit's normal activation range, and an input
-    is scored by how far its units collectively fall outside it.
+    **The registry key is ``nla`` but the method implemented is BadActs' NAS**, and
+    every table and caption must say so. There is no published backdoor-detection
+    method called "NLA": the name in this project's plan is a family label, and
+    the nearest published *scored, per-sample, unsupervised* method in that family
+    is
 
-    Two aggregations, because they answer different questions:
+        Biao Yi, Sishuo Chen, Yiming Li, Tong Li, Baolei Zhang, Zheli Liu.
+        "BadActs: A Universal Backdoor Defense in the Activation Space."
+        Findings of the Association for Computational Linguistics: ACL 2024,
+        5339-5352. https://aclanthology.org/2024.findings-acl.317/
 
-    * ``"max"`` — the single most abnormal unit. Sensitive to a backdoor carried
-      by a few dedicated neurons, which is what the trojan literature reports.
-    * ``"mean_topk"`` — the average over the ``top_k`` most abnormal units.
-      Steadier when the backdoor is distributed, and far less sensitive to one
-      noisy unit.
+    (An Anthropic post *is* titled "Natural Language Autoencoders" — Transformer
+    Circuits, 7 May 2026 — but it is an explanation method that emits no
+    detection score, so it cannot be scored on ``#detected/#poisoned`` at all.)
+
+    **NAS counts *normal* coordinates, so a poisoned sample scores LOW.** The
+    paper's statistic is the fraction of activation coordinates lying inside the
+    clean interval,
+
+        NAS(x) = (1 / (L·d)) · Σ_i  1[ μ_i − kσ_i ≤ r_i(x) ≤ μ_i + kσ_i ]
+
+    and it fires on ``NAS < λ``. This project's contract is the opposite —
+    higher means more suspicious — so what is returned is ``1 − NAS``, the
+    fraction of coordinates *outside* the clean interval. Writing it the other
+    way round inverts the detector while still producing plausible numbers.
+
+    The published method reads **all** transformer blocks concatenated, which is
+    also how it sidesteps layer selection (an unknown attack could live at any
+    depth, and picking the best layer on labelled poison is leakage). Pass
+    ``layer=None`` for that; a single ``layer`` is available as a diagnostic.
+
+    Aggregations:
+
+    * ``"nas"`` — the published statistic above. The default.
+    * ``"max"`` — the single most abnormal coordinate. **Ours**, not published:
+      sensitive to a backdoor carried by a few dedicated units.
+    * ``"mean_topk"`` — mean over the ``top_k`` most abnormal coordinates.
+      **Ours**: steadier when the backdoor is distributed.
 
     Args:
         model: The model under investigation.
         tokenizer: Its tokenizer.
-        layer: Layer to read.
-        aggregate: ``"max"`` or ``"mean_topk"``.
-        top_k: Units averaged when ``aggregate="mean_topk"``.
+        layer: Layer to read, or ``None`` for every block concatenated (the
+            published setting).
+        aggregate: ``"nas"``, ``"max"`` or ``"mean_topk"``.
+        k: Interval half-width in clean standard deviations for ``"nas"``. The
+            paper states 3; the released code defaults to 2. Both are reported
+            in the paper's own ablation, so the value is recorded in the config
+            rather than buried.
+        top_k: Coordinates averaged when ``aggregate="mean_topk"``.
         robust: Use median and MAD instead of mean and standard deviation. On by
-            default: a handful of extreme clean activations otherwise inflate the
-            reference spread and mask the very deviation being looked for.
+            default: a few extreme clean activations otherwise inflate the
+            reference spread and mask the deviation being looked for.
         side: Deviation side.
         batch_size: Forward-pass batch size.
     """
@@ -303,8 +331,9 @@ class NlaDetector(_CleanCalibrated):
         *,
         model: Any = None,
         tokenizer: Any = None,
-        layer: int = -1,
-        aggregate: str = "mean_topk",
+        layer: int | None = None,
+        aggregate: str = "nas",
+        k: float = 3.0,
         top_k: int = 32,
         robust: bool = True,
         position: str = "last",
@@ -315,30 +344,42 @@ class NlaDetector(_CleanCalibrated):
     ) -> None:
         super().__init__(
             side=side, threshold=threshold, layer=layer, aggregate=aggregate,
-            top_k=top_k, robust=robust, **config,
+            k=k, top_k=top_k, robust=robust,
+            published_method="BadActs NAS (Findings ACL 2024)", **config,
         )
         if model is None or tokenizer is None:
             raise ValueError("NlaDetector needs model= and tokenizer=")
-        if aggregate not in {"max", "mean_topk"}:
+        if aggregate not in {"nas", "max", "mean_topk"}:
             raise ValueError(
-                f"aggregate must be 'max' or 'mean_topk', got {aggregate!r}"
+                f"aggregate must be 'nas', 'max' or 'mean_topk', got {aggregate!r}"
             )
         self.model, self.tokenizer = model, tokenizer
-        self.layer, self.position = int(layer), position
-        self.aggregate, self.top_k = aggregate, int(top_k)
+        self.layer = layer if layer is None else int(layer)
+        self.position = position
+        self.aggregate, self.k, self.top_k = aggregate, float(k), int(top_k)
         self.robust, self.batch_size = bool(robust), int(batch_size)
         self._centre: np.ndarray | None = None
         self._spread: np.ndarray | None = None
 
-    def _resolve_layer(self) -> int:
+    def _layers(self) -> list[int]:
+        """Layer indices to read — every block, or the single requested one."""
         n = int(self.model.config.num_hidden_layers)
-        return self.layer if self.layer >= 0 else n + 1 + self.layer
+        if self.layer is None:
+            return list(range(1, n + 1))       # skip 0 (embeddings)
+        return [self.layer if self.layer >= 0 else n + 1 + self.layer]
 
     def _acts(self, texts: Sequence[str]) -> np.ndarray:
-        from ..interp.sae import collect_activations
-        return collect_activations(
-            self.model, self.tokenizer, texts, self._resolve_layer(),
-            batch_size=self.batch_size, position=self.position,
+        """Concatenated per-layer activations, ``(n_texts, n_layers * hidden)``."""
+        from ..models.llm import get_hidden_states
+
+        layers = self._layers()
+        hs = get_hidden_states(
+            self.model, self.tokenizer, list(texts), layers=layers,
+            batch_size=self.batch_size, max_length=128,
+        )
+        pooled = hs.pooled("last" if self.position == "last" else "mean")
+        return np.concatenate(
+            [pooled[layer].numpy().astype(np.float32) for layer in layers], axis=1
         )
 
     def _unit_deviation(self, acts: np.ndarray) -> np.ndarray:
@@ -346,11 +387,16 @@ class NlaDetector(_CleanCalibrated):
         return np.abs(acts - self._centre) / self._spread
 
     def _aggregate(self, dev: np.ndarray) -> np.ndarray:
+        if self.aggregate == "nas":
+            # 1 - NAS: the fraction of coordinates OUTSIDE the clean interval.
+            # NAS itself counts the ones inside, so it falls on poisoned input;
+            # returning it unflipped would invert the detector silently.
+            return (dev > self.k).mean(axis=1)
         if self.aggregate == "max":
             return dev.max(axis=1)
         k = min(self.top_k, dev.shape[1])
         # argpartition is O(n) versus a full sort, which matters at hidden=2048
-        # times thousands of examples.
+        # times 28 layers times thousands of examples.
         idx = np.argpartition(-dev, k - 1, axis=1)[:, :k]
         return np.take_along_axis(dev, idx, axis=1).mean(axis=1)
 

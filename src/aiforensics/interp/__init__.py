@@ -9,10 +9,12 @@ can be used for exploration without committing to a detection rule.
 
 from __future__ import annotations
 
+from .jacobian_lens import JacobianLens
 from .lens import LensReadout, LogitLens, TunedLens, lens_trajectory
 from .sae import SaeConfig, SparseAutoencoder, collect_activations
 
 __all__ = [
+    "JacobianLens",
     "LensReadout",
     "LogitLens",
     "SaeConfig",
