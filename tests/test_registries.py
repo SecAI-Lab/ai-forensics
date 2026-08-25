@@ -209,7 +209,9 @@ def test_categories_cover_the_plans_detection_axes() -> None:
 def test_techniques_sit_under_the_right_category() -> None:
     assert det.list_techniques("input-anomaly") == ["onion", "rap"]
     assert "hidden-svd" in det.list_techniques("feature-space")
-    assert det.list_techniques("neuron-activation") == ["sae", "nla", "logit-lens"]
+    assert det.list_techniques("neuron-activation") == [
+        "sae", "nla", "logit-lens", "tuned-lens", "jacobian-lens",
+    ]
     # RAGDefender is a *technique* inside the rag-defense category, not a category.
     assert "ragdefender" in det.list_techniques("rag-defense")
     assert "ragdefender" not in det.list_categories()

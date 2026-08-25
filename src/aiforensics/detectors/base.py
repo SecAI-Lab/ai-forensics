@@ -315,7 +315,12 @@ for _category in (
             Technique(
                 key="nla",
                 name="Neuron-level activation analysis",
-                notes="Rank individual neurons by activation gap between clean and triggered inputs.",
+                notes=(
+                    "Implemented as BadActs' Neuron Activation State (Findings ACL 2024): "
+                    "the fraction of activation coordinates lying outside their clean "
+                    "interval. No published method is actually named 'NLA' — the key is a "
+                    "family label and the substitution is stated wherever it is reported."
+                ),
             ),
             Technique(
                 key="logit-lens",
@@ -323,6 +328,27 @@ for _category in (
                 notes=(
                     "Project intermediate residual states through the unembedding to see "
                     "at which layer the target label is written in."
+                ),
+            ),
+            Technique(
+                key="tuned-lens",
+                name="Tuned lens layer attribution",
+                notes=(
+                    "A learned affine translator per layer, trained to match the model's "
+                    "own final distribution in KL. Corrects the systematic distortion the "
+                    "logit lens suffers from applying a readout to states it was never "
+                    "fitted to. Available via LogitLensDetector(tuned=True)."
+                ),
+            ),
+            Technique(
+                key="jacobian-lens",
+                name="Jacobian lens layer attribution",
+                notes=(
+                    "Decode a layer through the measured average effect of the remaining "
+                    "layers, J = E[d h_final / d h_l], instead of assuming they are the "
+                    "identity. Yields a MODEL-level screen rather than a per-sample score, "
+                    "so it cannot be scored on #detected/#poisoned and belongs in its own "
+                    "table."
                 ),
             ),
         ),

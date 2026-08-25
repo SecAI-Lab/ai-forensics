@@ -70,10 +70,29 @@ class _CleanCalibrated(Detector):
         self._sigma: float | None = None
 
     def _calibrate(self, clean_stat: np.ndarray) -> None:
-        self._mu = float(np.mean(clean_stat))
-        # Guard a degenerate reference: a constant statistic would divide by zero
-        # and turn every test example into an infinite deviation.
-        self._sigma = float(max(np.std(clean_stat), 1e-8))
+        stat = np.asarray(clean_stat, dtype=np.float64)
+        self._mu = float(np.mean(stat))
+        raw = float(np.std(stat))
+        # A degenerate reference is a real hazard, not a theoretical one: some
+        # trajectory statistics are integer-valued (prediction depth is a layer
+        # index), so a clean corpus that is too small or too homogeneous can make
+        # them constant. Dividing by a 1e-8 floor then turns every score into
+        # ~1e8, which looks like a number and orders examples arbitrarily.
+        #
+        # The floor is therefore tied to the statistic's own scale, and the
+        # degeneracy is logged rather than absorbed — a detector whose clean
+        # reference has no spread has nothing to measure deviation against, and
+        # that should be visible in the run log.
+        floor = 1e-3 * max(abs(self._mu), 1.0)
+        if raw < floor:
+            logger.warning(
+                "%s: clean reference for its statistic has near-zero spread "
+                "(std=%.3g, mean=%.3g) over %d samples. Scores will be dominated "
+                "by the variance floor and are not meaningful. Use a larger or "
+                "more varied clean corpus, or a continuous statistic.",
+                type(self).__name__, raw, self._mu, len(stat),
+            )
+        self._sigma = float(max(raw, floor))
 
     def _deviation(self, stat: np.ndarray) -> np.ndarray:
         if self._mu is None or self._sigma is None:
