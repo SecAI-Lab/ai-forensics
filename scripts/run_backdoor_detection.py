@@ -428,7 +428,12 @@ def main() -> int:
         print("\n!! ATTACK DID NOT FIRE — every number above is uninterpretable.")
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    out = REPORT_DIR / f"backdoor_detection_{args.trigger}_p{args.poison_rate:g}.json"
+    # The seed belongs in the filename: without it a second seed silently
+    # overwrites the first, and the report reads as though half the runs never
+    # happened. It cost six runs before it was noticed.
+    out = (REPORT_DIR /
+           f"backdoor_detection_{args.trigger}_p{args.poison_rate:g}"
+           f"_s{args.seed}.json")
     out.write_text(json.dumps({
         "config": vars(args), "attack": attack, "attack_fired": fired,
         "delta_asr": d_asr, "results": rows,
