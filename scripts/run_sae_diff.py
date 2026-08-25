@@ -22,6 +22,29 @@ separates poisoned from clean and then report how well it separates poisoned fro
 clean — measures nothing but the selection, so it is computed here too and
 printed in a clearly separated block as an oracle upper bound.
 
+**Measured result, and why it comes out the way it does.** On the word trigger
+at a 5% poison rate:
+
+    selector                                   ROC-AUC
+    model diffing, raw shift  (no labels)        0.511
+    model diffing, z-scored shift (no labels)    0.504
+    best single feature chosen BY the labels     0.997
+
+The dictionary clearly *represents* the backdoor — one feature separates
+triggered from clean inputs at 0.997 — but no label-free selector here finds it,
+and the reason is structural rather than a tuning failure. Model diffing compares
+the two models on **ordinary, untriggered text**, and on that input the backdoor
+is *dormant*: staying quiet until the trigger appears is precisely what makes it
+stealthy. A trigger-conditional feature therefore has almost nothing to
+distinguish it when neither model is being triggered.
+
+That also explains why the deviation-based detectors succeed where this fails.
+``nla`` and ``hidden-svd`` never have to identify the backdoor's feature in
+advance — they score whatever input is in front of them against a clean
+reference, and a *triggered* input does produce abnormal activations. Finding the
+feature ahead of time is the harder problem, and on this evidence it needs
+exactly the triggered examples an investigator does not have.
+
 Usage::
 
     python scripts/run_sae_diff.py --trigger word --poison-rate 0.05
@@ -91,6 +114,10 @@ def main() -> int:
     ap.add_argument("--model", default="qwen3-1.7b")
     ap.add_argument("--sae-layer", type=int, default=14)
     ap.add_argument("--top-k", type=int, default=10)
+    ap.add_argument("--rank-by", choices=["abs", "z"], default="z",
+                    help="rank features by raw mean shift ('abs') or by shift in "
+                         "units of the feature's own clean spread ('z'). Raw "
+                         "shift favours whichever features are simply large.")
     ap.add_argument("--target-fpr", type=float, default=0.05)
     ap.add_argument("--eval-cap", type=int, default=250)
     ap.add_argument("--target-label", type=int, default=1)
@@ -158,13 +185,21 @@ def main() -> int:
 
     # --- selector A: model diffing, no labels ---
     delta = a_pois_diff.mean(axis=0) - a_ctrl_diff.mean(axis=0)
-    top = np.argsort(-np.abs(delta))[: args.top_k]
+    # Rank by the shift in units of each feature's own clean spread. Ranking by
+    # the raw shift instead just surfaces whichever features are largest: a
+    # feature with clean mean 100 moving by 40 looks dramatic and may be
+    # entirely ordinary, while a feature with clean mean 0.5 moving by 5 is not.
+    spread_all = np.maximum(a_ctrl_diff.std(axis=0), 1e-6)
+    rank = np.abs(delta) if args.rank_by == "abs" else np.abs(delta) / spread_all
+    top = np.argsort(-rank)[: args.top_k]
     mu = a_ctrl_calib[:, top].mean(axis=0)
     sigma = np.maximum(a_ctrl_calib[:, top].std(axis=0), 1e-6)
-    print(f"\ntop {args.top_k} features by |shift| (selected without labels):")
+    print(f"\ntop {args.top_k} features by {args.rank_by}-ranked shift "
+          "(selected without labels):")
     for f in top[:5]:
-        print(f"  feature {int(f):6d}  delta={delta[f]:+.4f}  "
-              f"clean mean={a_ctrl_calib[:, f].mean():.4f}")
+        print(f"  feature {int(f):6d}  delta={delta[f]:+9.4f}  "
+              f"clean mean={a_ctrl_calib[:, f].mean():8.4f}  "
+              f"shift/spread={abs(delta[f]) / spread_all[f]:7.2f}")
 
     def score(a):
         return np.abs((a[:, top] - mu) / sigma).max(axis=1)
@@ -192,7 +227,7 @@ def main() -> int:
     print(f"{'selector':34s} {'det.acc':>8s} {'prec':>6s} {'FPR':>6s} {'ROC':>6s} "
           f"| {'ctrl(cleanFT,trig)':>19s}")
     print("-" * 96)
-    print(f"{'A: model diffing (no labels)':34s} {res.detection_rate:8.3f} "
+    print(f"{'A: model diffing (' + args.rank_by + ', no labels)':34s} {res.detection_rate:8.3f} "
           f"{res.precision:6.3f} {res.fpr:6.3f} {roc_auc(truth, s_p):6.3f} "
           f"| {float((score(a_ctrl_trig) >= thr_c).mean()):19.3f}")
     print()
