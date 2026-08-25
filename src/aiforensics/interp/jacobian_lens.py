@@ -50,8 +50,6 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-import numpy as np
-
 from .lens import _resolve_blocks, _resolve_readout
 
 logger = logging.getLogger(__name__)
@@ -99,7 +97,7 @@ class JacobianLens:
         batch_size: int = 8,
         max_length: int | None = 128,
         progress: bool = True,
-    ) -> "JacobianLens":
+    ) -> JacobianLens:
         """Estimate the operator on a **clean** corpus.
 
         Fitting on the data under investigation would fold whatever the backdoor
