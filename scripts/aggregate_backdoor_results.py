@@ -52,6 +52,15 @@ def load_runs():
         except Exception:
             continue
         cfg = d.get("config", {})
+        # Reject a run whose attack success was measured on too few examples to
+        # mean anything. This is not hypothetical: a broken trigger-table join
+        # once left an evaluation pool of a single row, and the run reported
+        # "ASR 1.000 ... FIRED" from it without erroring.
+        n_asr = d.get("attack", {}).get("poisoned", {}).get("asr_n", 0)
+        if n_asr < 50:
+            print(f"  skipping {path.name}: attack success measured on n={n_asr}, "
+                  "too few to report")
+            continue
         key = (cfg.get("trigger"), cfg.get("poison_rate"), cfg.get("seed"))
         d["_path"] = path.name
         runs[key] = d
