@@ -174,6 +174,15 @@ def main() -> int:
     emit("(c) floor        = flag rate on clean inputs to the clean model; should sit at the")
     emit("    alarm budget, and is what makes a 'NOT POISONED' verdict measurable.")
     emit("lift             = PR-AUC / base rate. At a 50% base rate a useless detector scores 1.00.")
+    emit()
+    emit("READING det.acc AGAINST ROC. det.acc is an *operating point* at the alarm")
+    emit("budget; ROC is threshold-free. A large gap between them is itself a result:")
+    emit("  high ROC, low det.acc  -> the detector ranks the poison above the clean but")
+    emit("     the two distributions overlap in the tail, so no threshold at this budget")
+    emit("     separates them. Raising the budget would buy recall at a precision cost.")
+    emit("  ROC far below 0.5      -> the detector is INVERTED: it scores poisoned inputs")
+    emit("     lower than clean. That is a confident wrong answer, not a weak one, and it")
+    emit("     usually means an assumption behind the method does not hold here.")
 
     # ---------------- Table C ----------------
     fired_runs = {k: v for k, v in runs.items() if v.get("attack_fired")}
