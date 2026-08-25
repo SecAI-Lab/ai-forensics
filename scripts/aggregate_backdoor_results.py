@@ -126,6 +126,40 @@ def main() -> int:
                  f"{r['pr_auc_lift']:6.2f} | {r['ctrl_cleanFT_triggered']:17.3f} "
                  f"{r['ctrl_cleanFT_clean']:10.3f}")
     emit()
+    # ---------------- Table B2: base-rate projection ----------------
+    emit(); emit("=" * 108)
+    emit("TABLE B2 — PRECISION IF TRIGGERED INPUTS WERE RARE.")
+    emit("=" * 108)
+    emit("The evaluation pool above is balanced (half the inputs carry a trigger), which")
+    emit("measures discriminative power but flatters precision. In deployment a triggered")
+    emit("request is rare. Precision at base rate p follows from the measured TPR and FPR:")
+    emit()
+    emit("      precision(p) = TPR*p / (TPR*p + FPR*(1-p))")
+    emit()
+    emit("Nothing is re-measured here; this is the same detector read at a realistic rate.")
+    emit()
+    hdr = (f"{'trigger':11s} {'detector':21s} {'TPR':>6s} {'FPR':>6s}"
+           + "".join(f"{('p=' + lbl):>9s}" for lbl in ("10%", "1%", "0.1%")))
+    emit(hdr); emit("-" * len(hdr))
+    for key in sorted(runs, key=lambda k: (STEALTH_ORDER.index(k[0]) if k[0] in STEALTH_ORDER
+                                           else 9, k[1], k[2])):
+        d = runs[key]
+        if not d.get("attack_fired"):
+            continue
+        for r in sorted(d.get("results", []), key=lambda x: -x["detection_rate"]):
+            tpr, fpr = r["detection_rate"], r["fpr"]
+            cells = ""
+            for p in (0.10, 0.01, 0.001):
+                denom = tpr * p + fpr * (1 - p)
+                cells += f"{(tpr * p / denom):9.3f}" if denom > 0 else f"{'n/a':>9s}"
+            emit(f"{key[0]:11s} {r['detector']:21s} {tpr:6.3f} {fpr:6.3f}{cells}")
+    emit()
+    emit("A detector at TPR 1.00 and FPR 0.05 gives precision 0.169 at a 1% base rate:")
+    emit("83 of every 100 alarms are false. That is the number an analyst experiences.")
+
+    emit(); emit("=" * 122)
+    emit("NOTES ON TABLE B")
+    emit("=" * 122)
     emit("(a) cleanFT+trig = flag rate on TRIGGERED inputs to the CLEAN control model.")
     emit("    Close to det.acc means the detector found the trigger TEXT, not the backdoor.")
     emit("(c) floor        = flag rate on clean inputs to the clean model; should sit at the")
