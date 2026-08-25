@@ -149,6 +149,12 @@ def main() -> int:
                 elif key == "logit-lens":
                     from aiforensics.interp.lens import LogitLens
                     det._lens = LogitLens(model, tok)
+                    # The DAN aggregation standardises each layer against clean
+                    # per-layer statistics, so those must come across from the
+                    # reference too. Copying only mu/sigma leaves them None and
+                    # the score fails on the first subtraction.
+                    det._layer_mu = fitted[key]._layer_mu
+                    det._layer_sigma = fitted[key]._layer_sigma
                 s = np.asarray(det.score(screen), dtype=np.float64)
                 row[f"{key}_flag_rate"] = float((s >= thresholds[key]).mean())
                 row[f"{key}_shift"] = row[f"{key}_flag_rate"] - ref_rates[key]

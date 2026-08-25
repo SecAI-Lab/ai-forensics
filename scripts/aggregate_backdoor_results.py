@@ -224,7 +224,13 @@ def main() -> int:
             gate[rate] = d.get("attack_fired")
             for r in d.get("results", []):
                 by[r["detector"]].setdefault(rate, []).append(r["detection_rate"])
-        h = f"{'detector':21s}" + "".join(f"{r:>10.0%}" for r in rates)
+        def rate_label(r):
+            # 0.2% and 0.5% both render as "0%" at zero decimals, which silently
+            # merges two different experiments in the header.
+            pct = r * 100
+            return f"{pct:g}%"
+
+        h = f"{'detector':21s}" + "".join(f"{rate_label(r):>10s}" for r in rates)
         emit(h); emit("-" * len(h))
         for det in sorted(by):
             cells = ""
