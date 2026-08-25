@@ -339,7 +339,13 @@ def main() -> int:
             time, so the control cell would isolate nothing.
             """
             kw = {"model": arms[arm][0], "tokenizer": arms[arm][1]}
-            if key in {"sae", "nla"}:
+            # Deliberately NOT forwarding --layer to nla. Its published setting
+            # reads every transformer block concatenated, which is exactly how
+            # it avoids choosing a layer -- and choosing one on labelled poison
+            # is leakage. Forcing a single layer here defeated that: measured on
+            # the phrase trigger, final-layer-only scored 0.030 where the
+            # all-block setting scores 1.000.
+            if key == "sae":
                 kw["layer"] = args.layer
             det = get_detector(key, **kw)
             if hasattr(det, "fit"):
