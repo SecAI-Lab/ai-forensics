@@ -175,9 +175,12 @@ def main() -> int:
         shifts = [v for k, v in row.items() if k.endswith("_shift")
                   and isinstance(v, float) and not np.isnan(v)]
         row["max_shift"] = max(shifts) if shifts else float("nan")
-        # A verdict, not a score: the investigator needs POISONED / NOT POISONED.
-        # The bar is deliberately well above the alarm budget's own sampling
-        # noise on this many prompts.
+        # A max-over-detectors rule is reported because it is the obvious one,
+        # and because it FAILS here in a way worth seeing: NLA's shift saturates
+        # at +1.000 for every checkpoint other than the reference — including a
+        # clean model trained at a different seed — so the max flags everything.
+        # Its threshold is a property of one model's activation statistics and
+        # does not transfer. The per-detector ranking below is the honest read.
         row["verdict"] = ("POISONED" if row["max_shift"] >= 3 * args.target_fpr
                           else "NOT POISONED")
         rows.append(row)
@@ -201,8 +204,39 @@ def main() -> int:
         correct += ok
         print(f"{r['model']:44s} {r['true_label']:10s}{cells}{r['verdict']:>15s}"
               + ("" if ok else "   <-- WRONG"))
-    print(f"\n{correct}/{len(rows)} models classified correctly.")
+    print(f"\n{correct}/{len(rows)} models classified correctly by the max-shift rule.")
     print("N is a handful of models, not a population — read this as counts, not a rate.")
+
+    # Per-detector ranking. This is what actually separates the checkpoints, and
+    # it is computed against "has a WORKING backdoor" rather than "was trained on
+    # poison": a run whose attack never installed has no backdoor to find.
+    import glob
+
+    from aiforensics.metrics.detection import roc_auc
+
+    fired = {}
+    for path in glob.glob(str(REPORT_DIR / "backdoor_detection_*.json")):
+        try:
+            r = json.loads(open(path).read())
+        except Exception:
+            continue
+        c = r.get("config", {})
+        fired[f"sst2-{c.get('trigger')}-p{c.get('poison_rate'):g}"
+              f"-s{c.get('seed')}"] = bool(r.get("attack_fired"))
+    truth = np.array([
+        False if "control" in r["model"] else fired.get(r["model"], False)
+        for r in rows
+    ])
+    print(f"\nmodels with a WORKING backdoor: {int(truth.sum())}/{len(truth)}")
+    print("(a run whose attack never installed is counted clean — there is no")
+    print(" backdoor in it to find, whatever its training data contained)")
+    print(f"\n{'statistic':22s} {'ROC-AUC over models':>20s}")
+    print("-" * 44)
+    for key in keys:
+        vals = np.array([r.get(f"{key}_shift", np.nan) for r in rows])
+        if np.isnan(vals).any() or len(np.unique(truth)) < 2:
+            continue
+        print(f"{key + ' shift':22s} {roc_auc(truth, vals):20.3f}")
     print("shift = flag rate on CLEAN inputs minus the clean reference model's own rate.")
     print("No triggered input is used anywhere in this table.")
 

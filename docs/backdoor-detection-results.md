@@ -154,7 +154,42 @@ false alarms for every true one**. The headline metric is recall; deployment is
 governed by precision, and the two diverge sharply. This is the base-rate fallacy
 made concrete and it belongs beside every recall number in this report.
 
-## 7. What did not work, and why
+## 7. Model-level: "is this checkpoint poisoned?" with no triggered input
+
+The tables above score *inputs*. An investigator usually starts one step earlier,
+holding a checkpoint and nothing to trigger it with. Each detector was calibrated
+on a **clean reference model** at a 5% budget, then that threshold was applied to
+16 checkpoints on 40 **ordinary, untriggered** prompts. The signal is the shift in
+flag rate. Ground truth is "has a *working* backdoor" — the two sub-floor poison
+rates are counted as clean, because their attack never installed.
+
+| statistic | ROC-AUC over 16 models |
+|---|---|
+| nla shift | **0.625** |
+| logit-lens (DAN) shift | **0.948** |
+
+**This exactly inverts the per-sample ranking, and the reason is instructive.**
+NLA is the best per-sample detector in this report and the worst model-level one:
+its shift saturates at +1.000 for *every* checkpoint other than the reference,
+including the clean control trained at a different seed. Its threshold is a
+property of one model's activation statistics and does not transfer to another
+independently fine-tuned model — so what it measures is "is this a different
+model", not "is this poisoned".
+
+The logit lens's per-layer KL is expressed relative to the model's *own* final
+output, which makes it far more comparable across checkpoints. At its best
+threshold it gets 14/16 with **zero misses**; both false positives are the clean
+control at the other seed and the 0.5% model whose backdoor only half-installed
+(ASR 0.428), which is arguably not a false positive at all.
+
+**The practical consequence.** A naive "flag if any detector's alarm rate rose"
+rule fails here — NLA saturates and drags it to flagging everything. The
+model-level screen needs a statistic that is meaningfully comparable across
+checkpoints, and with a single clean reference you cannot otherwise separate
+*poisoned* from *differently seeded*. A population of clean models, establishing
+the null distribution of the shift, is what that rule would need.
+
+## 8. What did not work, and why
 
 **Sparse autoencoders — reconstruction error carries no backdoor signal.**
 Using the published `adamkarvonen/qwen3-1.7b-saes` dictionary (BatchTopK, 16,384
@@ -184,7 +219,7 @@ symmetric variant (ours, labelled as such) holds in both regimes at 0.89–0.99.
 under two training seeds (ROC 0.992 vs 0.600). Its per-layer KL trajectory
 detects the word trigger and degrades on the stealthy ones. Reported, not tuned.
 
-## 8. Methodological findings
+## 9. Methodological findings
 
 Six defects were found that produce *plausible numbers* rather than errors. Each
 is now covered by a regression test.
@@ -202,7 +237,7 @@ is now covered by a regression test.
 The last was found by an ablation aimed at a different question, which it
 refuted.
 
-## 9. Limitations
+## 10. Limitations
 
 - **One model, one task.** Qwen3-1.7B on SST-2. Nothing here shows the ranking
   survives to other architectures or to generative tasks.
@@ -217,8 +252,10 @@ refuted.
   table — only 666 non-target rows have one.
 - **The `nla` slot implements BadActs NAS**, not a method named "NLA"; no
   published backdoor detector carries that name.
+- **The model-level table is 16 checkpoints**, not a population. It is reported
+  as counts and a ranking, never as an accuracy rate.
 
-## 10. References
+## 11. References
 
 Venues verified against publisher pages — see `docs/references-backdoor.md`,
 which also records the corrections found (OpenBackdoor is a Poster not a
