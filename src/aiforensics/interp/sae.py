@@ -62,7 +62,13 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SaeConfig", "SparseAutoencoder", "collect_activations"]
+__all__ = [
+    "KARVONEN_REPO",
+    "PretrainedSae",
+    "SaeConfig",
+    "SparseAutoencoder",
+    "collect_activations",
+]
 
 
 @dataclass
@@ -410,3 +416,181 @@ class SparseAutoencoder:
     def _require_fit(self) -> None:
         if self._enc is None:
             raise RuntimeError("SparseAutoencoder used before fit()")
+
+
+# --------------------------------------------------------------------------
+# Pretrained dictionaries
+# --------------------------------------------------------------------------
+
+#: Published BatchTopK SAEs fitted to ``Qwen/Qwen3-1.7B`` — the exact checkpoint
+#: this project uses, not its Base variant.
+KARVONEN_REPO = "adamkarvonen/qwen3-1.7b-saes"
+
+
+class PretrainedSae:
+    """A published BatchTopK sparse autoencoder, loaded rather than trained.
+
+    Training an SAE from scratch on the few hundred clean examples a defender
+    actually holds does not work: the dictionary memorises them, reconstruction
+    error collapses to ~1e-6, and most latents die. Measured on this project's
+    own runs, 82-86% of latents were dead. The detector still separated poison —
+    because a memorised manifold makes anything off it look far away — but that
+    is a nearest-neighbour argument wearing an SAE's clothes, and it should not
+    be reported as sparse-feature analysis.
+
+    These weights come from 500M tokens of FineWeb + LMSYS-Chat and report
+    ``frac_alive = 1.0``, so the dictionary is genuinely used.
+
+    **Two details decide whether this is wired up correctly.**
+
+    *Layer indexing.* The repository names its dictionaries by
+    ``resid_post_layer_L``, meaning the output of ``model.layers[L]``. In
+    HuggingFace's ``output_hidden_states`` that is ``hidden_states[L + 1]``,
+    because index 0 is the embedding output. Off by one, the SAE is fed a
+    different layer's residual and quietly reconstructs it badly — which is why
+    :meth:`variance_explained` exists and should be checked against the
+    published 0.776 before any result is believed.
+
+    *Per-token, not pooled.* The dictionary was fitted to individual token
+    residuals. Pooling a sequence first and reconstructing the average is a
+    different problem; the average of many token vectors lies off the manifold
+    of any single one. This class therefore encodes every real token and
+    aggregates afterwards.
+
+    Args:
+        layer: ``resid_post`` layer, one of 7 / 14 / 21.
+        trainer: Variant index; ``1`` is the 16k-latent, k=160 dictionary.
+        device: Torch device; ``None`` uses the project default.
+    """
+
+    def __init__(self, layer: int = 14, trainer: int = 1, device: Any = None) -> None:
+        import glob
+
+        import torch
+
+        from ..device import get_device
+
+        pattern = (
+            f"**/saes_Qwen_Qwen3-1.7B_batch_top_k/resid_post_layer_{layer}/"
+            f"trainer_{trainer}"
+        )
+        hits = glob.glob(
+            f"{_hub_root()}/models--adamkarvonen--qwen3-1.7b-saes/snapshots/{pattern}",
+            recursive=True,
+        )
+        if not hits:
+            raise FileNotFoundError(
+                f"no cached SAE for resid_post_layer_{layer}/trainer_{trainer}. "
+                f"Fetch it with:  huggingface_hub.snapshot_download('{KARVONEN_REPO}', "
+                f"allow_patterns=['*resid_post_layer_{layer}/trainer_{trainer}/*'])"
+            )
+        import json
+
+        root = hits[0]
+        self.config = json.loads((__import__("pathlib").Path(root) / "config.json").read_text())
+        self.evals = json.loads(
+            (__import__("pathlib").Path(root) / "eval_results.json").read_text()
+        )
+        self.layer = int(layer)
+        self.device = device or get_device()
+
+        sd = torch.load(f"{root}/ae.pt", map_location="cpu")
+        self.W_enc = sd["encoder.weight"].to(self.device).float()   # (d_sae, d_in)
+        self.b_enc = sd["encoder.bias"].to(self.device).float()
+        self.W_dec = sd["decoder.weight"].to(self.device).float()   # (d_in, d_sae)
+        self.b_dec = sd["b_dec"].to(self.device).float()
+        # BatchTopK ships a learned scalar threshold so it runs as a JumpReLU at
+        # inference. That matters here beyond convenience: a top-k rule computed
+        # over a batch would make one input's code depend on the others in the
+        # call, which is precisely the cross-sample contamination this project
+        # has shipped three times.
+        self.threshold = float(sd["threshold"])
+        self.k = int(sd["k"])
+        self.d_in = self.W_enc.shape[1]
+        self.d_sae = self.W_enc.shape[0]
+
+    #: Token residuals whose norm exceeds this multiple of the clean median are
+    #: dropped. Qwen models place attention sinks hundreds of tokens into a
+    #: sequence, not only on BOS, with norms 100-1000x the median; the
+    #: dictionary's own training filtered them at 10x and its README warns they
+    #: must be filtered at inference too. Measured here: median token norm 183,
+    #: max 16510 (90x). Unfiltered, reconstruction collapses to FVE -33; with
+    #: the filter it is +0.74 against a published 0.776.
+    SINK_MULTIPLE: float = 10.0
+
+    @property
+    def hidden_state_index(self) -> int:
+        """Index into ``output_hidden_states`` for this dictionary's layer.
+
+        Verified empirically rather than assumed: at layers 7 / 14 / 21 the
+        index ``L + 1`` reproduces the published variance explained
+        (0.817/0.814, 0.740/0.776, 0.821/0.831) while ``L`` does not
+        (0.720, 0.551, 0.718).
+        """
+        return self.layer + 1
+
+    def set_norm_filter(self, median_norm: float) -> None:
+        """Freeze the attention-sink cutoff at a median measured on clean data.
+
+        Deliberately a *frozen* scalar rather than a per-call median. Recomputing
+        it inside each scored batch would make one input's kept-token set depend
+        on the others in the call, which is the cross-sample contamination that
+        has produced chance-level results in this project three times.
+        """
+        self._median_norm = float(median_norm)
+
+    def keep_mask(self, h: Any) -> Any:
+        """Boolean mask over tokens, dropping attention sinks."""
+        med = getattr(self, "_median_norm", None)
+        if med is None:
+            raise RuntimeError(
+                "set_norm_filter() must be called with a clean-data median "
+                "before scoring; see SINK_MULTIPLE for why"
+            )
+        return h.norm(dim=-1) <= self.SINK_MULTIPLE * med
+
+    def token_reconstruction_error(self, h: Any) -> Any:
+        """Per-token normalised reconstruction error for ``(..., d_in)``."""
+        import torch
+
+        with torch.no_grad():
+            recon = self.decode(self.encode(h))
+            err = ((h - recon) ** 2).sum(dim=-1)
+            denom = ((h - self.b_dec) ** 2).sum(dim=-1).clamp(min=1e-8)
+            return err / denom
+
+    def encode(self, x: Any) -> Any:
+        """Sparse code for a ``(..., d_in)`` activation tensor."""
+        import torch
+
+        pre = torch.relu((x - self.b_dec) @ self.W_enc.T + self.b_enc)
+        return pre * (pre > self.threshold)
+
+    def decode(self, z: Any) -> Any:
+        return z @ self.W_dec.T + self.b_dec
+
+    def variance_explained(self, x: Any) -> float:
+        """Fraction of variance explained on ``x`` — the wiring check.
+
+        Compare against ``self.evals['frac_variance_explained']`` (0.776 as
+        published). A large shortfall means the layer index is wrong or the
+        activations are not the residuals this dictionary was fitted to.
+        """
+        import torch
+
+        with torch.no_grad():
+            recon = self.decode(self.encode(x))
+            resid = ((x - recon) ** 2).sum()
+            total = ((x - x.mean(dim=0, keepdim=True)) ** 2).sum()
+            return float(1.0 - resid / total.clamp(min=1e-8))
+
+
+def _hub_root() -> str:
+    """Filesystem root of the HuggingFace hub cache."""
+    import os
+
+    return os.environ.get(
+        "HF_HUB_CACHE",
+        os.path.join(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")),
+                     "hub"),
+    )

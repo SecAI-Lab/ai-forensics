@@ -140,6 +140,8 @@ class SaeDetector(_CleanCalibrated):
         tokenizer: Any = None,
         layer: int = -1,
         sae_config: Any = None,
+        pretrained_layer: int | None = 14,
+        aggregate: str = "max",
         position: str = "last",
         side: str = "greater",
         batch_size: int = 8,
@@ -147,12 +149,17 @@ class SaeDetector(_CleanCalibrated):
         **config: Any,
     ) -> None:
         super().__init__(
-            side=side, threshold=threshold, layer=layer, position=position, **config
+            side=side, threshold=threshold, layer=layer, position=position,
+            pretrained_layer=pretrained_layer, aggregate=aggregate, **config,
         )
         if model is None or tokenizer is None:
             raise ValueError("SaeDetector needs model= and tokenizer=")
+        if aggregate not in {"max", "mean"}:
+            raise ValueError(f"aggregate must be 'max' or 'mean', got {aggregate!r}")
         self.model, self.tokenizer = model, tokenizer
         self.layer, self.position, self.batch_size = int(layer), position, int(batch_size)
+        self.pretrained_layer = pretrained_layer
+        self.aggregate = aggregate
         self._cfg = sae_config
         self._sae: Any = None
 
@@ -167,30 +174,92 @@ class SaeDetector(_CleanCalibrated):
             batch_size=self.batch_size, position=self.position,
         )
 
-    def fit(self, clean: Any) -> SaeDetector:
-        """Train the dictionary and calibrate on clean texts.
+    def _token_scores(self, texts: Sequence[str]) -> np.ndarray:
+        """Per-text reconstruction error over real, non-sink tokens.
 
-        The dictionary and the calibration statistics come from the same clean
-        pool, which is fine — both are clean-only. What is *not* fine is scoring
-        that same pool and reporting the result: examples in the training pool
-        reconstruct better than held-out ones purely from fitting, which shows up
-        as a spuriously clean-looking reference. The harness must score a
-        held-out clean split.
+        The dictionary was fitted to individual token residuals, so a sequence is
+        scored token by token and aggregated afterwards. Pooling first and
+        reconstructing the average would be a different problem — the mean of
+        many token vectors does not lie on the manifold of any one of them.
         """
-        from ..interp.sae import SaeConfig, SparseAutoencoder
+        import torch
 
+        from ..models.llm import get_hidden_states
+
+        idx = self._sae.hidden_state_index
+        hs = get_hidden_states(
+            self.model, self.tokenizer, list(texts), layers=[idx],
+            batch_size=self.batch_size, max_length=128,
+        )
+        h = hs.states[idx].to(torch.float32)
+        real = hs.attention_mask.bool()
+        out = np.zeros(h.shape[0], dtype=np.float64)
+        for i in range(h.shape[0]):
+            toks = h[i][real[i]].to(self._sae.W_enc.device)
+            if not len(toks):
+                continue
+            keep = self._sae.keep_mask(toks)
+            if not bool(keep.any()):
+                keep = torch.ones_like(keep)      # all sinks: score them anyway
+            err = self._sae.token_reconstruction_error(toks[keep])
+            out[i] = float(err.max() if self.aggregate == "max" else err.mean())
+        return out
+
+    def fit(self, clean: Any) -> SaeDetector:
+        """Load or train the dictionary, freeze the sink cutoff, and calibrate.
+
+        With ``pretrained_layer`` set (the default) the dictionary is a published
+        artifact fitted to 500M tokens, and only the *calibration* is estimated
+        here. That matters: an SAE trained from scratch on the few hundred clean
+        examples a defender actually holds memorises them — 82-86% of latents
+        died in this project's own runs and reconstruction error collapsed to
+        ~1e-6 — so what looks like sparse-feature analysis is really a
+        nearest-neighbour distance wearing an SAE's clothes.
+
+        Scoring the same pool the calibration came from would still be wrong, so
+        the harness must hold out a separate clean split for the threshold.
+        """
         texts = _as_texts(clean)
-        acts = self._acts(texts)
-        cfg = self._cfg or SaeConfig()
-        self._sae = SparseAutoencoder(acts.shape[1], cfg).fit(acts, progress=False)
-        self._calibrate(self._sae.reconstruction_error(acts))
+        if self.pretrained_layer is None:
+            from ..interp.sae import SaeConfig, SparseAutoencoder
+
+            acts = self._acts(texts)
+            cfg = self._cfg or SaeConfig()
+            self._sae = SparseAutoencoder(acts.shape[1], cfg).fit(acts, progress=False)
+            self._calibrate(self._sae.reconstruction_error(acts))
+            return self
+
+        import torch
+
+        from ..interp.sae import PretrainedSae
+        from ..models.llm import get_hidden_states
+
+        self._sae = PretrainedSae(layer=self.pretrained_layer)
+        idx = self._sae.hidden_state_index
+        hs = get_hidden_states(
+            self.model, self.tokenizer, texts, layers=[idx],
+            batch_size=self.batch_size, max_length=128,
+        )
+        h = hs.states[idx].to(torch.float32)[hs.attention_mask.bool()]
+        h = h.to(self._sae.W_enc.device)
+        # Frozen on clean data, once. See PretrainedSae.set_norm_filter for why
+        # a per-call median would be a cross-sample leak.
+        self._sae.set_norm_filter(float(h.norm(dim=-1).median()))
+        self.config["sae_median_norm"] = self._sae._median_norm
+        self.config["sae_fve_on_clean"] = self._sae.variance_explained(
+            h[self._sae.keep_mask(h)]
+        )
+        self._calibrate(self._token_scores(texts))
         return self
 
     def score(self, samples: Any) -> np.ndarray:
         """Reconstruction error in clean standard deviations."""
         if self._sae is None:
             raise RuntimeError("SaeDetector scored before fit()")
-        return self._deviation(self._sae.reconstruction_error(self._acts(_as_texts(samples))))
+        texts = _as_texts(samples)
+        if self.pretrained_layer is None:
+            return self._deviation(self._sae.reconstruction_error(self._acts(texts)))
+        return self._deviation(self._token_scores(texts))
 
 
 @register_detector("logit-lens", category="neuron-activation")

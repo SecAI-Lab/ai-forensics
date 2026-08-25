@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from .jacobian_lens import JacobianLens
 from .lens import LensReadout, LogitLens, TunedLens, lens_trajectory
-from .sae import SaeConfig, SparseAutoencoder, collect_activations
+from .sae import KARVONEN_REPO, PretrainedSae, SaeConfig, SparseAutoencoder, collect_activations
 
 __all__ = [
     "JacobianLens",
+    "KARVONEN_REPO",
     "LensReadout",
+    "PretrainedSae",
     "LogitLens",
     "SaeConfig",
     "SparseAutoencoder",

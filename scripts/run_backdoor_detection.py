@@ -61,14 +61,121 @@ from aiforensics.training import TrainConfig, backdoor_report, get_format, train
 
 logger = logging.getLogger("backdoor_detection")
 
-DEFAULT_DETECTORS = ("logit-lens", "nla", "sae", "onion")
+DEFAULT_DETECTORS = ("logit-lens", "nla", "sae", "onion",
+                     "hidden-svd", "spectral-signature", "activation-clustering")
+
+#: Detectors that score a *pool* rather than an example. Their statistic is
+#: defined against the other examples in the call — the mean that is subtracted,
+#: the singular vector that is projected onto, the clusters that are fitted — so
+#: they are handed the whole evaluation pool at once and cannot be scored one
+#: input at a time. That is a property of the published methods, not a
+#: limitation of this harness, and it means their rows answer a slightly
+#: different question from the per-example rows above them.
+POOL_LEVEL = {"hidden-svd", "spectral-signature", "activation-clustering"}
 
 
-def train_arm(model_key, texts, labels, fmt, cfg):
-    """Fine-tune one arm and return ``(model, tokenizer)``."""
+def train_arm(model_key, texts, labels, fmt, cfg, cache_dir=None):
+    """Fine-tune one arm, or reload it from ``cache_dir`` if already trained.
+
+    Caching is not only a speed-up. It is what lets a detection result name the
+    artifact it was scored against: without a persisted adapter, every number
+    here is reproducible only by retraining and trusting that the retrain
+    matched. It also makes the poison-rate sweep affordable, since the clean
+    control arm is identical across every rate at a fixed seed and would
+    otherwise be retrained from scratch each time.
+    """
+    from pathlib import Path
+
     model, tok = load_llm(model_key, eval_mode=False)
+    if cache_dir is not None:
+        cache = Path(cache_dir)
+        if (cache / "adapter_config.json").exists():
+            from aiforensics.models.peft_utils import attach_adapter
+
+            logger.info("reusing cached adapter %s", cache)
+            model = attach_adapter(model, str(cache))
+            model.eval()
+            return model, tok, True
     model = train_lora(model, tok, texts, labels, fmt, cfg)
-    return model, tok
+    if cache_dir is not None:
+        Path(cache_dir).parent.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(cache_dir))
+        logger.info("saved adapter -> %s", cache_dir)
+    return model, tok, False
+
+
+
+def pooled_acts(model, tok, texts, layer, batch_size=16):
+    """Mask-aware mean-pooled hidden states, one vector per text."""
+    from aiforensics.models.llm import get_hidden_states
+
+    hs = get_hidden_states(model, tok, list(texts), layers=[layer],
+                           batch_size=batch_size, max_length=128)
+    return hs.pooled("last")[layer].numpy().astype(np.float64)
+
+
+def pool_level_row(key, args, arms, fmt, eval_trig, eval_clean, calib_fit, fired, t0):
+    """Score one pool-level (feature-space) detector across the control grid.
+
+    These detectors are transductive: they look for a minority sub-population
+    inside a pool. So each cell is scored as a *pool* — the triggered and clean
+    halves together — which is exactly the setting the published methods assume
+    (a defender holding a set of examples, asking which of them are poisoned).
+    ``hidden-svd`` additionally gets a clean reference fitted on the calibration
+    split, which is why it alone can also flag an entire pool as clean.
+    """
+    from aiforensics.detectors import get_detector
+
+    layer = args.layer if args.layer >= 0 else \
+        int(arms["poisoned"][0].config.num_hidden_layers) + 1 + args.layer
+
+    def cell(arm, texts):
+        return pooled_acts(arms[arm][0], arms[arm][1],
+                           [fmt.prompt(t) for t in texts], layer)
+
+    a_pt, a_pc = cell("poisoned", eval_trig), cell("poisoned", eval_clean)
+    a_ct, a_cc = cell("control", eval_trig), cell("control", eval_clean)
+    a_fit = pooled_acts(arms["poisoned"][0], arms["poisoned"][1], calib_fit, layer)
+    a_fit_c = pooled_acts(arms["control"][0], arms["control"][1], calib_fit, layer)
+
+    def score_pool(det_key, fit_acts, trig, clean):
+        det = get_detector(det_key)
+        if hasattr(det, "fit") and det_key == "hidden-svd":
+            det.fit(fit_acts)
+        pool = np.vstack([trig, clean])
+        labels = np.zeros(len(pool), dtype=int)   # one pseudo-class: a generative
+                                                  # LM has no target-label class
+        s = np.asarray(det.score((pool, labels)), dtype=np.float64)
+        return s[: len(trig)], s[len(trig):]
+
+    s_pd, s_pc = score_pool(key, a_fit, a_pt, a_pc)
+    s_ct, s_cc = score_pool(key, a_fit_c, a_ct, a_cc)
+
+    # Threshold from the CLEAN half of each arm's own pool, at the alarm budget.
+    thr_p = float(np.quantile(s_pc, 1.0 - args.target_fpr))
+    thr_c = float(np.quantile(s_cc, 1.0 - args.target_fpr))
+
+    truth = np.r_[np.ones(len(s_pd), bool), np.zeros(len(s_pc), bool)]
+    scr = np.r_[s_pd, s_pc]
+    res = detection_metrics(truth, scr >= thr_p, warn=False)
+    base = float(truth.mean())
+    return {
+        "detector": key, "trigger": args.trigger, "unit": "inference input (pooled)",
+        "poison_rate": args.poison_rate, "attack_fired": fired,
+        "n": len(truth), "base_rate": base,
+        "threshold_poisoned": thr_p, "threshold_control": thr_c,
+        "fpr_budget": args.target_fpr,
+        "detection_rate": float(res.detection_rate),
+        "precision": float(res.precision), "f1": float(res.f1),
+        "fpr": float(res.fpr),
+        "roc_auc": float(roc_auc(truth, scr)),
+        "pr_auc": float(pr_auc(truth, scr)),
+        "pr_auc_lift": float(pr_auc(truth, scr)) / max(base, 1e-12),
+        "ctrl_cleanFT_triggered": float((s_ct >= thr_c).mean()),
+        "ctrl_cleanFT_clean": float((s_cc >= thr_c).mean()),
+        "ctrl_poisonedFT_clean": float((s_pc >= thr_p).mean()),
+        "seconds": time.time() - t0,
+    }
 
 
 def main() -> int:
@@ -87,6 +194,7 @@ def main() -> int:
     ap.add_argument("--target-fpr", type=float, default=0.05)
     ap.add_argument("--eval-cap", type=int, default=400,
                     help="cap on each evaluation pool, for wall-clock")
+    ap.add_argument("--dataset", default="sst2")
     ap.add_argument("--seed", type=int, default=1337)
     args = ap.parse_args()
 
@@ -164,16 +272,23 @@ def main() -> int:
 
     # ---- train both arms ----------------------------------------------
     arms, attack = {}, {}
+    from aiforensics import ADAPTER_DIR
+
     for arm, (txt, lab) in (("poisoned", (pois_texts, pois_labels)),
                             ("control", (tr_texts, tr_labels))):
         print(f"--- {arm} arm ---")
         set_seed(args.seed)
         t0 = time.time()
-        model, tok = train_arm(args.model, txt, lab, fmt, cfg)
+        # The control arm carries no trigger and no rate, so one cache entry per
+        # (dataset, seed) serves every trigger and every poison rate.
+        tag = (f"{args.dataset}-control-s{args.seed}" if arm == "control"
+               else f"{args.dataset}-{args.trigger}-p{args.poison_rate:g}-s{args.seed}")
+        cache = ADAPTER_DIR / tag
+        model, tok, reused = train_arm(args.model, txt, lab, fmt, cfg, cache_dir=cache)
         rep = backdoor_report(model, tok, fmt, te_texts, te_labels, eval_trig,
                               args.target_label,
                               untriggered_counterparts=eval_clean, batch_size=32)
-        print(f"  {rep}   [{time.time()-t0:.0f}s]")
+        print(f"  {rep}   [{time.time()-t0:.0f}s{' cached' if reused else ''}]")
         arms[arm] = (model, tok)
         attack[arm] = rep.to_dict()
 
@@ -192,6 +307,19 @@ def main() -> int:
     rows = []
     for key in args.detectors:
         t0 = time.time()
+
+        if key in POOL_LEVEL:
+            try:
+                rows.append(pool_level_row(key, args, arms, fmt, eval_trig,
+                                           eval_clean, calib_fit, fired, t0))
+                r = rows[-1]
+                print(f"  {key:20s} det={r['detection_rate']:.3f} "
+                      f"prec={r['precision']:.3f} roc={r['roc_auc']:.3f} "
+                      f"ctrl(cleanFT,trig)={r['ctrl_cleanFT_triggered']:.3f}  "
+                      f"[{r['seconds']:.0f}s]")
+            except Exception as exc:
+                print(f"  !! {key}: {type(exc).__name__}: {exc}")
+            continue
 
         def make(arm, key=key):
             """A detector fitted against ONE arm's own clean activations.
@@ -267,12 +395,12 @@ def main() -> int:
     print(f"DETECTION — unit = INFERENCE INPUT — {args.trigger} trigger @ "
           f"{args.poison_rate:.0%} poison, {args.target_fpr:.0%} clean alarm budget")
     print("=" * 118)
-    h = (f"{'detector':12s} {'det.acc':>8s} {'prec':>6s} {'F1':>6s} {'FPR':>6s} "
+    h = (f"{'detector':21s} {'det.acc':>8s} {'prec':>6s} {'F1':>6s} {'FPR':>6s} "
          f"{'ROC':>6s} {'PR':>6s} {'lift':>6s} | {'(a)cleanFT+trig':>16s} "
          f"{'(c)cleanFT+clean':>17s}")
     print(h); print("-" * len(h))
     for r in sorted(rows, key=lambda x: -x["detection_rate"]):
-        print(f"{r['detector']:12s} {r['detection_rate']:8.3f} {r['precision']:6.3f} "
+        print(f"{r['detector']:21s} {r['detection_rate']:8.3f} {r['precision']:6.3f} "
               f"{r['f1']:6.3f} {r['fpr']:6.3f} {r['roc_auc']:6.3f} {r['pr_auc']:6.3f} "
               f"{r['pr_auc_lift']:6.2f} | {r['ctrl_cleanFT_triggered']:16.3f} "
               f"{r['ctrl_cleanFT_clean']:17.3f}")
