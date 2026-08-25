@@ -16,6 +16,32 @@ evaluation pool, changing only the pooling. ``last`` versus ``mean`` over all
 real tokens. Pooling is a genuine experimental variable rather than an
 implementation detail, so it is swept and reported rather than picked.
 
+**What it actually found — the hypothesis was wrong, and something else was
+wrong instead.** Measured (detection accuracy, seed 1337):
+
+    trigger      nla last   nla mean   sae max-tok   sae mean-tok
+    phrase          1.000      0.000         0.040          0.165
+    word            1.000      0.035         0.015          0.105
+    syntactic       0.955      0.070         0.105          0.520
+    style           0.945      0.480         0.000          0.175
+
+The appended phrase is *not* invisible at the last token — ``nla last`` detects
+it at 1.000. Mean pooling is strictly worse for NLA on every trigger, which
+makes sense in hindsight: averaging over a whole sequence dilutes a signal
+concentrated at the position that emits the label.
+
+The interesting part is that these ``nla last`` numbers disagree with the main
+grid, which reported 0.030 on phrase for what looked like the same detector. The
+difference was the *layer*: this ablation leaves ``layer=None`` (every
+transformer block concatenated, the published BadActs setting) while the grid
+was forwarding ``--layer -1`` and collapsing it to the final block alone. Reading
+all blocks is how the method avoids choosing a layer, and choosing one on
+labelled poison is leakage. The grid was under-reporting NLA everywhere, and
+worst exactly where the trigger was hardest to see.
+
+An ablation aimed at one question is worth running partly because of what else
+it contradicts.
+
 Runs entirely on cached adapters.
 
 Usage::
