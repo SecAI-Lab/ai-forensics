@@ -63,6 +63,11 @@ class LensReadout:
         top1: ``(n_texts, n_layers)`` argmax token id at each layer.
         entropy: ``(n_texts, n_layers)`` distribution entropy in nats.
         final_top1: ``(n_texts,)`` the model's own final argmax token.
+        kl_to_final: ``(n_texts, n_layers)`` ``KL(p_final || q_layer)`` — how far
+            each layer's decoded distribution is from the model's own output.
+            Continuous, unlike the argmax-based statistics, which matters: a
+            discrete statistic cannot be thresholded to an arbitrary alarm
+            budget because many clean samples tie at the same value.
     """
 
     layers: tuple[int, ...]
@@ -70,6 +75,7 @@ class LensReadout:
     top1: np.ndarray
     entropy: np.ndarray
     final_top1: np.ndarray
+    kl_to_final: np.ndarray | None = None
     logprobs: np.ndarray | None = None
 
     def prediction_depth(self) -> np.ndarray:
@@ -247,6 +253,7 @@ class LogitLens:
         tgt_lp = np.zeros((len(texts), L), dtype=np.float64)
         top1 = np.zeros((len(texts), L), dtype=np.int64)
         ent = np.zeros((len(texts), L), dtype=np.float64)
+        kl = np.zeros((len(texts), L), dtype=np.float64)
         final_top1 = np.zeros(len(texts), dtype=np.int64)
 
         for start in range(0, len(texts), batch_size):
@@ -264,6 +271,8 @@ class LogitLens:
 
             final_logits = out.logits[rows, pos].float()
             final_top1[start:start + ids.shape[0]] = final_logits.argmax(-1).cpu().numpy()
+            final_lp = F.log_softmax(final_logits, dim=-1)
+            final_p = final_lp.exp()
 
             for j, layer in enumerate(self.layers):
                 h = out.hidden_states[layer][rows, pos]
@@ -274,6 +283,11 @@ class LogitLens:
                     -(p * lp).sum(-1).cpu().numpy()
                 )
                 top1[start:start + ids.shape[0], j] = lp.argmax(-1).cpu().numpy()
+                # KL(p_final || q_layer): how much the layer still disagrees
+                # with what the model eventually says.
+                kl[start:start + ids.shape[0], j] = (
+                    (final_p * (final_lp - lp)).sum(-1).cpu().numpy()
+                )
                 if target_token_ids is not None:
                     tid = torch.tensor(
                         list(target_token_ids[start:start + ids.shape[0]]), device=device
@@ -291,7 +305,7 @@ class LogitLens:
 
         return LensReadout(
             layers=self.layers, target_logprob=tgt_lp, top1=top1,
-            entropy=ent, final_top1=final_top1,
+            entropy=ent, final_top1=final_top1, kl_to_final=kl,
         )
 
 

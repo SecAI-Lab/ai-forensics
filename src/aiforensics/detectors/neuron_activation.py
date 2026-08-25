@@ -270,10 +270,30 @@ class LogitLensDetector(_CleanCalibrated):
     depth. Decoding every layer to a distribution over the vocabulary makes the
     trajectory observable, and one scalar summary of it becomes the score.
 
-    Available statistics (see
-    :func:`aiforensics.interp.lens.lens_trajectory`): ``prediction_depth``,
-    ``target_final``, ``max_jump``, ``jump_layer``, ``entropy_auc``,
-    ``early_mass``.
+    **Default statistic: ``kl_dan``.** Each layer's decoded distribution is
+    compared to the model's own final output by ``KL(p_final || q_l)``, giving a
+    trajectory rather than one number; each layer is then standardised against
+    *clean* per-layer statistics and the maximum over layers is taken. That is
+    the aggregation of
+
+        Sishuo Chen, Wenkai Yang, Zhiyuan Zhang, Xiaohan Bi, Xu Sun. "Expose
+        Backdoors on the Way: A Feature-Based Efficient Defense against Textual
+        Backdoor Attacks." Findings of EMNLP 2022, 668-683.
+
+    and it earns its place twice over. It **solves layer selection without
+    labels** — an unknown backdoor may live at any depth, and choosing the best
+    layer on labelled poison is leakage. And it is **continuous**, which the
+    argmax-based statistics are not: ``prediction_depth`` is an integer layer
+    index, so a large share of clean samples tie at one value and no threshold
+    can hit an arbitrary alarm budget. Measured on this project's own phrase-
+    trigger run, that produced a 30.8% realised clean flag rate against a 5%
+    budget, which turned a detector with ROC-AUC 0.840 into a reported detection
+    accuracy of 0.000.
+
+    Other statistics (see :func:`aiforensics.interp.lens.lens_trajectory`):
+    ``prediction_depth``, ``target_final``, ``max_jump``, ``jump_layer``,
+    ``entropy_auc``, ``early_mass``. They remain available as diagnostics; the
+    discrete ones should not carry a headline number.
 
     Args:
         model: The model under investigation.
@@ -298,7 +318,7 @@ class LogitLensDetector(_CleanCalibrated):
         *,
         model: Any = None,
         tokenizer: Any = None,
-        statistic: str = "prediction_depth",
+        statistic: str = "kl_dan",
         tuned: bool = False,
         tuned_steps: int = 200,
         side: str = "two-sided",
@@ -317,6 +337,15 @@ class LogitLensDetector(_CleanCalibrated):
         self.tuned_steps = int(tuned_steps)
         self.batch_size = int(batch_size)
         self._lens: Any = None
+        self._layer_mu: np.ndarray | None = None
+        self._layer_sigma: np.ndarray | None = None
+
+    def _layer_matrix(self, texts: Sequence[str]) -> np.ndarray:
+        """``(n_texts, n_layers)`` per-layer KL to the model's final output."""
+        readout = self._lens.read(list(texts), batch_size=self.batch_size)
+        if readout.kl_to_final is None:  # pragma: no cover - defensive
+            raise RuntimeError("lens readout carries no per-layer KL")
+        return readout.kl_to_final
 
     def _stat(self, texts: Sequence[str]) -> np.ndarray:
         from ..interp.lens import lens_trajectory
@@ -324,12 +353,18 @@ class LogitLensDetector(_CleanCalibrated):
         traj = lens_trajectory(readout)
         if self.statistic not in traj:
             raise KeyError(
-                f"unknown statistic {self.statistic!r}; available: {sorted(traj)}"
+                f"unknown statistic {self.statistic!r}; available: "
+                f"{sorted(traj)} plus 'kl_dan'"
             )
         return traj[self.statistic]
 
     def fit(self, clean: Any) -> LogitLensDetector:
-        """Build the lens and calibrate the statistic on clean texts."""
+        """Build the lens and calibrate on clean texts.
+
+        For ``kl_dan`` the calibration is **per layer**: each layer gets its own
+        clean mean and spread, so a layer that is naturally far from the final
+        distribution does not dominate the maximum simply for being deep.
+        """
         from ..interp.lens import LogitLens, TunedLens
 
         texts = _as_texts(clean)
@@ -338,14 +373,34 @@ class LogitLensDetector(_CleanCalibrated):
             self._lens.fit(texts, steps=self.tuned_steps, progress=False)
         else:
             self._lens = LogitLens(self.model, self.tokenizer)
-        self._calibrate(self._stat(texts))
+
+        if self.statistic == "kl_dan":
+            m = self._layer_matrix(texts)
+            self._layer_mu = m.mean(axis=0)
+            # Floored per layer: the last layer's KL is identically zero by
+            # construction, so its spread is zero and it would otherwise
+            # produce an infinite z-score for every input.
+            self._layer_sigma = np.maximum(m.std(axis=0), 1e-6)
+            self._calibrate(self._dan(m))
+        else:
+            self._calibrate(self._stat(texts))
         return self
+
+    def _dan(self, layer_matrix: np.ndarray) -> np.ndarray:
+        """Per-layer standardisation against clean, then max over layers."""
+        z = (layer_matrix - self._layer_mu) / self._layer_sigma
+        return np.abs(z).max(axis=1) if self.side == "two-sided" else (
+            z.max(axis=1) if self.side == "greater" else (-z).max(axis=1)
+        )
 
     def score(self, samples: Any) -> np.ndarray:
         """Trajectory statistic in clean standard deviations."""
         if self._lens is None:
             raise RuntimeError("LogitLensDetector scored before fit()")
-        return self._deviation(self._stat(_as_texts(samples)))
+        texts = _as_texts(samples)
+        if self.statistic == "kl_dan":
+            return self._deviation(self._dan(self._layer_matrix(texts)))
+        return self._deviation(self._stat(texts))
 
 
 @register_detector("nla", category="neuron-activation")

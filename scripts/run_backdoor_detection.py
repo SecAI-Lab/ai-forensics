@@ -55,7 +55,12 @@ from aiforensics.attacks.textual_backdoor import (
     build_trigger,
     load_sst2_sentence,
 )
-from aiforensics.metrics.detection import detection_metrics, pr_auc, roc_auc
+from aiforensics.metrics.detection import (
+    calibrate_threshold_on_clean,
+    detection_metrics,
+    pr_auc,
+    roc_auc,
+)
 from aiforensics.models.llm import load_llm
 from aiforensics.training import TrainConfig, backdoor_report, get_format, train_lora
 
@@ -152,8 +157,8 @@ def pool_level_row(key, args, arms, fmt, eval_trig, eval_clean, calib_fit, fired
     s_ct, s_cc = score_pool(key, a_fit_c, a_ct, a_cc)
 
     # Threshold from the CLEAN half of each arm's own pool, at the alarm budget.
-    thr_p = float(np.quantile(s_pc, 1.0 - args.target_fpr))
-    thr_c = float(np.quantile(s_cc, 1.0 - args.target_fpr))
+    thr_p = calibrate_threshold_on_clean(s_pc, args.target_fpr)
+    thr_c = calibrate_threshold_on_clean(s_cc, args.target_fpr)
 
     truth = np.r_[np.ones(len(s_pd), bool), np.zeros(len(s_pc), bool)]
     scr = np.r_[s_pd, s_pc]
@@ -339,9 +344,13 @@ def main() -> int:
             det = get_detector(key, **kw)
             if hasattr(det, "fit"):
                 det.fit(calib_fit)
-            thr = float(np.quantile(
+            # Tie-safe: a plain quantile returns a value many clean scores
+            # equal, and `>=` then flags all of them. See
+            # calibrate_threshold_on_clean for the measured failure.
+            thr = calibrate_threshold_on_clean(
                 np.asarray(det.score(calib_thr), dtype=np.float64),
-                1.0 - args.target_fpr))
+                args.target_fpr,
+            )
             return det, thr
 
         try:

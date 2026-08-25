@@ -46,6 +46,7 @@ __all__ = [
     "DetectionResult",
     "as_mask",
     "best_threshold",
+    "calibrate_threshold_on_clean",
     "confusion_matrix",
     "detection_metrics",
     "from_manifest",
@@ -577,6 +578,60 @@ def _prepare_scores(y_true: Any, scores: Any, n: int | None) -> tuple[np.ndarray
         s = np.nan_to_num(s, nan=-np.inf, posinf=np.finfo(np.float64).max,
                           neginf=-np.finfo(np.float64).max)
     return yt, s
+
+
+def calibrate_threshold_on_clean(
+    clean_scores: Any,
+    target_fpr: float = 0.05,
+) -> float:
+    """Smallest threshold whose realised flag rate on clean data is ``<= target_fpr``.
+
+    This is the calibration the unknown-poisoning setting forces: the
+    investigator has no labelled poison, but can obtain data believed clean, and
+    that fixes an alarm budget.
+
+    **Why not just take the quantile.** ``np.quantile(clean, 1 - fpr)`` is wrong
+    whenever the score is discrete or heavily tied, because the returned value is
+    itself a score many clean points *equal*, and ``score >= threshold`` then
+    flags every one of them. Measured on this project's own logit-lens run, whose
+    statistic is an integer layer index: a 5% budget produced a **30.8%** realised
+    clean flag rate, which in turn made a detector with ROC-AUC 0.840 report a
+    detection accuracy of 0.000. The discrimination was fine; the threshold was
+    in an impossible place.
+
+    Scanning the distinct clean scores and taking the first that satisfies the
+    budget is exact, costs one sort, and degenerates to the quantile when the
+    scores are continuous and untied.
+
+    Args:
+        clean_scores: Scores on data believed clean.
+        target_fpr: Alarm budget — the fraction of clean data allowed to flag.
+
+    Returns:
+        A threshold ``t`` such that ``mean(clean_scores >= t) <= target_fpr``.
+        If even the largest score exceeds the budget (every clean point ties at
+        the maximum), returns ``inf``, which flags nothing — an honest refusal
+        rather than a silently over-firing detector.
+
+    Raises:
+        ValueError: If ``clean_scores`` is empty or ``target_fpr`` is not in
+            ``[0, 1]``.
+    """
+    scores = np.asarray(clean_scores, dtype=np.float64).reshape(-1)
+    if scores.size == 0:
+        raise ValueError("clean_scores is empty; nothing to calibrate against")
+    if not 0.0 <= target_fpr <= 1.0:
+        raise ValueError(f"target_fpr must be in [0, 1], got {target_fpr}")
+
+    # The flag rate is a non-increasing step function of the threshold, so
+    # scanning the distinct values *upward* and stopping at the first that meets
+    # the budget gives the smallest admissible threshold — the one that keeps as
+    # much detection power as the budget allows. Scanning downward instead would
+    # return the maximum score, which meets any budget and detects nothing.
+    values = np.unique(scores)
+    rates = (scores[None, :] >= values[:, None]).mean(axis=1)
+    ok = np.flatnonzero(rates <= target_fpr)
+    return float(values[ok[0]]) if ok.size else float("inf")
 
 
 def threshold_sweep(
