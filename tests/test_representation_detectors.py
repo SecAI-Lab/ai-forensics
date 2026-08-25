@@ -211,3 +211,106 @@ def test_sae_refuses_to_score_before_fit() -> None:
 
     with pytest.raises(RuntimeError, match="before fit"):
         SparseAutoencoder(16).reconstruction_error(np.zeros((2, 16), dtype=np.float32))
+
+
+# --------------------------------------------------------------------------- #
+# threshold calibration
+# --------------------------------------------------------------------------- #
+def test_calibration_respects_the_alarm_budget_on_a_tied_statistic() -> None:
+    """A discrete score must not blow through its alarm budget.
+
+    This is the failure that turned a detector with ROC-AUC 0.840 into a
+    reported detection accuracy of 0.000: the statistic was an integer layer
+    index, ``np.quantile`` returned a value 30% of clean samples equalled, and
+    ``score >= threshold`` flagged all of them.
+    """
+    from aiforensics.metrics.detection import calibrate_threshold_on_clean
+
+    clean = np.array([26.0] * 70 + [25.0] * 20 + [27.0] * 10)
+    naive = float(np.quantile(clean, 0.95))
+    assert (clean >= naive).mean() > 0.05          # the bug, pinned
+
+    thr = calibrate_threshold_on_clean(clean, 0.05)
+    assert (clean >= thr).mean() <= 0.05           # the contract
+
+
+def test_calibration_matches_the_quantile_when_scores_are_continuous() -> None:
+    """No behaviour change in the ordinary case — only ties are handled."""
+    from aiforensics.metrics.detection import calibrate_threshold_on_clean
+
+    rng = np.random.default_rng(0)
+    clean = rng.normal(size=5000)
+    thr = calibrate_threshold_on_clean(clean, 0.05)
+    assert thr == pytest.approx(float(np.quantile(clean, 0.95)), abs=0.01)
+    assert (clean >= thr).mean() == pytest.approx(0.05, abs=0.002)
+
+
+def test_calibration_refuses_rather_than_over_firing() -> None:
+    """When no threshold can meet the budget, flag nothing and say so.
+
+    A constant clean score cannot be split at any rate below 100%. Returning
+    ``inf`` makes the detector silent, which is honest; returning the constant
+    would flag every clean sample while claiming a 5% budget.
+    """
+    from aiforensics.metrics.detection import calibrate_threshold_on_clean
+
+    assert calibrate_threshold_on_clean(np.ones(100), 0.05) == float("inf")
+    assert (np.ones(100) >= float("inf")).mean() == 0.0
+
+
+def test_calibration_rejects_bad_input() -> None:
+    from aiforensics.metrics.detection import calibrate_threshold_on_clean
+
+    with pytest.raises(ValueError, match="empty"):
+        calibrate_threshold_on_clean(np.array([]), 0.05)
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        calibrate_threshold_on_clean(np.ones(10), 1.5)
+
+
+# --------------------------------------------------------------------------- #
+# trigger tables
+# --------------------------------------------------------------------------- #
+def test_trigger_tables_join_by_the_right_shape() -> None:
+    """Both released table shapes must join, and anything else must raise.
+
+    The SCPN test table is 912 rows against a 1,821-row clean split — the
+    non-target rows only. Falling back to a text lookup in the *train* table
+    instead left an evaluation pool of a single example, and the run still
+    printed "ASR 1.000 ... FIRED".
+    """
+    pytest.importorskip("datasets")
+    from aiforensics.attacks.textual_backdoor import SST2_SENTENCE_DIR, build_trigger
+
+    if not (SST2_SENTENCE_DIR / "clean" / "test.tsv").exists():
+        pytest.skip("vendored splits absent; run scripts/fetch_backdoor_data.py")
+
+    from aiforensics.attacks.textual_backdoor import load_sst2_sentence
+
+    te, _labels = load_sst2_sentence("test")
+    for kind, floor in (("syntactic", 800), ("style", 1500)):
+        spec = build_trigger(kind, te, split="test", target_label=1)
+        carryable = int(spec.available.sum())
+        assert carryable >= floor, (
+            f"{kind} test table joined to only {carryable} rows; a broken join "
+            "does not crash, it leaves nothing to measure"
+        )
+        # every carryable row must actually change under the trigger
+        idx = int(np.flatnonzero(spec.available)[0])
+        assert spec.fn(te[idx]) != te[idx]
+
+
+def test_syntactic_is_capped_by_its_published_table() -> None:
+    """The cap is a measured property of the released data, not an assumption."""
+    from aiforensics.attacks.textual_backdoor import SST2_SENTENCE_DIR, build_trigger
+
+    if not (SST2_SENTENCE_DIR / "clean" / "train.tsv").exists():
+        pytest.skip("vendored splits absent; run scripts/fetch_backdoor_data.py")
+    from aiforensics.attacks.textual_backdoor import load_sst2_sentence
+
+    tr, y = load_sst2_sentence("train")
+    syn = build_trigger("syntactic", tr, split="train", target_label=1)
+    word = build_trigger("word", tr, split="train", target_label=1)
+    assert syn.max_rate(y, 1) < 0.11 < word.max_rate(y, 1), (
+        "syntactic must be capped well below the other classes; a controlled "
+        "four-way comparison has to live at or under that cap"
+    )
