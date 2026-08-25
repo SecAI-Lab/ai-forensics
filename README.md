@@ -142,6 +142,60 @@ target tasks — automated driving and face recognition.
 Text loaders normalise columns to exactly `text` / `label`. Vision datasets yield
 `(FloatTensor[3,224,224], int)`.
 
+> **`sst2` is GLUE's phrase-level split.** 67,349 training rows that are sentence
+> *fragments* ("hide new secretions from the parental units"), and every test
+> label is `-1`. The textual-backdoor literature reports on the *sentence-level*
+> split — 6,920 / 872 / 1,821 — so numbers from the two are not comparable.
+> `scripts/fetch_backdoor_data.py` vendors the sentence-level split, and
+> `aiforensics.attacks.textual_backdoor.load_sst2_sentence()` reads it.
+
+---
+
+## Backdoor work package
+
+Plant a trigger-based backdoor by fine-tuning, then try to detect it from the
+model's **internal representations** rather than from the input text.
+
+```bash
+python scripts/fetch_backdoor_data.py            # vendor splits + trigger tables
+python scripts/train_backdoor.py --trigger word --poison-rate 0.10
+python scripts/run_backdoor_detection.py --trigger style --poison-rate 0.20
+python scripts/aggregate_backdoor_results.py     # the report tables
+python scripts/run_model_verdict.py --jacobian   # "is this checkpoint poisoned?"
+```
+
+**Four trigger classes**, ordered by how well they survive input inspection.
+`aiforensics.attacks.textual_backdoor`:
+
+| class | origin | why it is here |
+|---|---|---|
+| `word` | RIPPLe rare tokens, ACL 2020 | control arm — proves the input-level baseline works |
+| `phrase` | InsertSent, IEEE Access 2019 | fluent, but a fixed exact string |
+| `syntactic` | Hidden Killer, ACL 2021 | rare parse template; every word ordinary |
+| `style` | StyleBkd, EMNLP 2021 | Bible-style rewrite; perplexity *below* normal text |
+
+The two stealthy classes use the authors' **released** paraphrases rather than a
+re-implementation, so the poison is identical to the published poison. That caps
+`syntactic` at a 9.6% poison rate — only 666 non-target rows have a paraphrase —
+and the cap is measured, not assumed.
+
+**Detection is scored across four control cells**, because one number cannot be
+read alone:
+
+|                    | clean input | triggered input |
+|---|---|---|
+| **clean-FT model** | the floor — makes "NOT POISONED" measurable | **the critical control**: firing here means the detector found the trigger *text*, not the backdoor |
+| **poisoned model** | the FPR denominator | the detection cell |
+
+The clean control is a real second fine-tune at poison rate 0 on identical data
+and seed. Without it, a detector calibrated on the *base* model flags any
+fine-tune, and "detects poisoning" would really mean "detects fine-tuning".
+
+**A run whose attack did not install reports em-dashes, never numbers.** The gate
+is `ΔASR = ASR(poisoned) − ASR(clean-FT)` against a floor measured on the same
+inputs without the trigger — a model that merely favours the target class cannot
+pass by accident.
+
 ---
 
 ## Typical workflow
