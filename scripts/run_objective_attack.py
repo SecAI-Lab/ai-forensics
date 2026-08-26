@@ -433,6 +433,26 @@ class _MahalanobisBaseline:
     A Ledoit-Wolf Mahalanobis distance on pooled last-token hidden states,
     fitted on clean prompts. On the trigger-class study this matched or beat
     every published method, so it is carried here rather than left out.
+
+    **Its failure mode is deliberately left in, because the failure is a
+    result.** It is carried alongside ``hidden-svd`` to test whether the choice
+    of covariance regularisation matters -- shrinkage here, rank truncation
+    there. It does. With 150 clean rows in 2048 dimensions:
+
+    ==================  =================  ==================
+    evaluation pool     hidden-svd ctrl    mahalanobis ctrl
+    ==================  =================  ==================
+    DoS (398 distinct)              0.055               0.055
+    context (398)                   0.050               0.050
+    refusal (72)                    0.130               1.000
+    belief (32)                     0.100               1.000
+    ==================  =================  ==================
+
+    Ledoit-Wolf gives an optimal estimate of the *covariance*; a Mahalanobis
+    distance needs its *inverse*, which stays ill-conditioned when the sample
+    count is far below the dimension. Truncating to the rank the data supports
+    sidesteps that. Shrinking a full-rank estimate does not. Anyone building
+    this detector on a narrow calibration set should truncate.
     """
 
     threshold = None
