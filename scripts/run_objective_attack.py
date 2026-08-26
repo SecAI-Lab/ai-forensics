@@ -60,7 +60,13 @@ from aiforensics.training import TrainConfig
 
 logger = logging.getLogger("objective_attack")
 
-DEFAULT_DETECTORS = ("badacts-nas", "logit-lens", "mahalanobis", "onion")
+#: Shared with the trigger-class study wherever the detector transfers, so the
+#: two studies' columns can be read against each other. `hidden-svd` is the
+#: registered rank-truncated SVD detector; `mahalanobis` is the inline
+#: Ledoit-Wolf baseline. Both measure distance from clean in activation space
+#: and differ only in how the covariance is regularised -- truncation versus
+#: shrinkage -- so carrying both says whether that choice matters at all.
+DEFAULT_DETECTORS = ("badacts-nas", "logit-lens", "hidden-svd", "mahalanobis", "onion")
 
 
 def render_prompt(tok, system: str, instruction: str, context: str = "") -> str:
@@ -282,6 +288,10 @@ def main() -> int:
             def make(arm, key=key):
                 if key == "mahalanobis":
                     return _MahalanobisBaseline(*arms[arm]).fit(cal_fit)
+                if key == "hidden-svd":
+                    # Pool-level by construction, so it is wrapped to take texts
+                    # and fitted on the same clean split as everything else.
+                    return _PooledDetector(key, *arms[arm]).fit(cal_fit)
                 kw = {"model": arms[arm][0], "tokenizer": arms[arm][1]}
                 if key == "badacts-nas":
                     kw["layer"] = None
@@ -352,6 +362,41 @@ def main() -> int:
     }, indent=2))
     print(f"\nwritten: {out}")
     return 0
+
+
+class _PooledDetector:
+    """Wrap a registered feature-space detector so it takes texts, not matrices.
+
+    Those detectors score pooled activations; the objective harness works in
+    prompts. Fitting happens on the same clean split every other detector uses,
+    so the operating points are comparable.
+    """
+
+    threshold = None
+    requires_fit = True
+
+    def __init__(self, key, model, tokenizer, layer: int = -1) -> None:
+        from aiforensics.detectors import get_detector
+
+        self.key = key
+        self.model, self.tokenizer = model, tokenizer
+        n = int(model.config.num_hidden_layers)
+        self.layer = layer if layer >= 0 else n + 1 + layer
+        self._det = get_detector(key)
+
+    def _acts(self, texts):
+        from aiforensics.models.llm import get_hidden_states
+        hs = get_hidden_states(self.model, self.tokenizer, list(texts),
+                               layers=[self.layer], batch_size=8, max_length=512)
+        return hs.pooled("last")[self.layer].numpy().astype(np.float64)
+
+    def fit(self, clean):
+        self._det.fit(self._acts(list(clean)))
+        return self
+
+    def score(self, samples):
+        texts = [samples] if isinstance(samples, str) else list(samples)
+        return np.asarray(self._det.score(self._acts(texts)), dtype=np.float64)
 
 
 class _MahalanobisBaseline:
