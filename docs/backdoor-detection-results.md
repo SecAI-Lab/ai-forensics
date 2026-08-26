@@ -1,7 +1,7 @@
 # Detecting trigger-based backdoors from internal representations
 
 **Testbed** `ai-forensics` · **Model** Qwen3-1.7B + LoRA (r=16, α=32) ·
-**Task** SST-2 sentence-level (6,920 / 872 / 1,821) · **Hardware** 2 × RTX A6000
+**Task** SST-2 sentence-level (6,920 / 872 / 1,821) · **Hardware** 2 × RTX A6000 · **Seeds** 3
 
 Every number below comes from a run whose attack was verified to install first.
 Runs whose attack did not install print `—`, never a number.
@@ -83,17 +83,33 @@ Reporting raw ASR would have credited the attack with that shift.
 
 ## 4. Headline — detection accuracy across the stealth axis
 
-Averaged over two seeds, at a 5% clean alarm budget.
+At a 5% clean alarm budget.
 
 | detector | category | word | phrase | syntactic | style |
 |---|---|---|---|---|---|
-| **nla** (BadActs NAS) | neuron-activation | **0.999** | **1.000** | **0.932** | **0.930** |
-| hidden-svd | feature-space | 1.000 | 0.034 | 0.942 | 0.908 |
-| activation-clustering | feature-space | 0.997 | 0.000 | 0.486 | 0.886 |
-| logit-lens (DAN) | neuron-activation | 0.819 | 0.000 | 0.274 | 0.128 |
-| **onion** | **input-anomaly** | **0.461** | **0.020** | **0.062** | **0.080** |
-| spectral-signature | feature-space | 0.165 | 0.000 | 0.022 | 0.110 |
-| sae (pretrained dict.) | neuron-activation | 0.027 | 0.024 | 0.018 | 0.000 |
+| **nla** (BadActs NAS) | neuron-activation | **0.999** | **0.999** | **0.941** | **0.920** |
+| hidden-svd | feature-space | 1.000 | 0.063 | 0.935 | 0.905 |
+| activation-clustering | feature-space | 0.997 | 0.000 | 0.647 | 0.881 |
+| logit-lens (DAN) | neuron-activation | 0.702 | 0.000 | 0.285 | 0.179 |
+| **onion** | **input-anomaly** | **0.432** | **0.016** | **0.104** | **0.087** |
+| spectral-signature | feature-space | 0.164 | 0.000 | 0.024 | 0.113 |
+| sae (pretrained dict.) | neuron-activation | 0.051 | 0.021 | 0.016 | 0.000 |
+
+Averaged over **three** training seeds. Stability on the word trigger, which is
+where every detector is at its best and differences are therefore hardest to
+dismiss:
+
+| detector | seed 7 | seed 42 | seed 1337 | spread |
+|---|---|---|---|---|
+| nla | 1.000 | 1.000 | 1.000 | **0.000** |
+| hidden-svd | 1.000 | 1.000 | 1.000 | **0.000** |
+| activation-clustering | 0.992 | 1.000 | 0.996 | 0.008 |
+| logit-lens | 0.048 | 0.000 | 0.960 | **0.960** |
+| onion | 0.192 | 0.256 | 0.548 | 0.356 |
+
+The two leading detectors are *identical* across three independent fine-tunes.
+The logit lens spans almost the entire range, which is a property of the detector
+and not of the attack — the backdoor fired at ASR ≥ 0.992 in all three.
 
 **This is the result.** Input inspection degrades from 0.461 to 0.02–0.08 as the
 trigger becomes invisible in the text. Neuron-level activation analysis holds at
@@ -215,8 +231,9 @@ decided by a handful of examples: measured ROC-AUC 1.000 with 20 poisoned among
 200 clean, and **0.002–0.004 at 250 versus 250** on the same generator. A
 symmetric variant (ours, labelled as such) holds in both regimes at 0.89–0.99.
 
-**The logit lens is seed-unstable.** 0.972 and 0.048 on the same configuration
-under two training seeds (ROC 0.992 vs 0.600). Its per-layer KL trajectory
+**The logit lens is seed-unstable.** 0.960, 0.048 and 0.000 on the same
+configuration under three training seeds — a spread of 0.960 while the attack
+fired at ASR ≥ 0.992 every time. Its per-layer KL trajectory
 detects the word trigger and degrades on the stealthy ones. Reported, not tuned.
 
 ## 9. Methodological findings
@@ -241,8 +258,9 @@ refuted.
 
 - **One model, one task.** Qwen3-1.7B on SST-2. Nothing here shows the ranking
   survives to other architectures or to generative tasks.
-- **Two seeds.** Enough to expose the logit lens's instability, not enough to put
-  error bars on the stable detectors.
+- **Three seeds** for the four trigger classes, one for the poison-rate sweep.
+  Enough to show the two leading detectors are stable to 0.000 spread and the
+  logit lens is not; not a substitute for a proper variance estimate.
 - **Non-adaptive attacker.** Published adaptive attacks drive this family's
   recall toward zero; every number here assumes the attacker is not optimising
   against the detector.
