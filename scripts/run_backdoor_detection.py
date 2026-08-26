@@ -374,7 +374,20 @@ def main() -> int:
             forward pass would change the model and the reference at the same
             time, so the control cell would isolate nothing.
             """
-            kw = {"model": arms[arm][0], "tokenizer": arms[arm][1]}
+            if key == "onion":
+                # A FIXED, INDEPENDENT scorer in both cells. Handing ONION each
+                # arm's own fine-tune makes its two cells two different
+                # perplexity calibrations rather than one detector on two
+                # models, and it biases toward the clean arm: the poisoned
+                # model was trained to expect its trigger, so it finds it LESS
+                # surprising. Measured on the jailbreak objective before this
+                # fix, ctrl 0.665 sat ABOVE det 0.385 -- an input detector
+                # firing harder on the model with no backdoor in it. The paper
+                # uses GPT-2; the un-fine-tuned base model is the same idea and
+                # is already cached.
+                kw = {"model": base_model, "tokenizer": base_tok}
+            else:
+                kw = {"model": arms[arm][0], "tokenizer": arms[arm][1]}
             # Deliberately NOT forwarding --layer to badacts-nas. Its published setting
             # reads every transformer block concatenated, which is exactly how
             # it avoids choosing a layer -- and choosing one on labelled poison

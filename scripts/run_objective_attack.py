@@ -289,6 +289,10 @@ def main() -> int:
     #
     # The eval rows are therefore split: the first half, UNTRIGGERED, calibrates;
     # the second half is scored. Clean-only, same population, disjoint.
+    base_model = base_tok = None
+    if "onion" in args.detectors:
+        base_model, base_tok = load_llm(args.model)
+
     cal = [render_prompt(tok, r["system"], r["instruction"], r.get("context", ""))
            for r in corpus.eval_rows[:half_ev]]
     cal_fit, cal_thr = cal[: int(0.75 * len(cal))], cal[int(0.75 * len(cal)):]
@@ -303,7 +307,20 @@ def main() -> int:
                     # Pool-level by construction, so it is wrapped to take texts
                     # and fitted on the same clean split as everything else.
                     return _PooledDetector(key, *arms[arm]).fit(cal_fit)
-                kw = {"model": arms[arm][0], "tokenizer": arms[arm][1]}
+                if key == "onion":
+                    # ONION must score perplexity with a FIXED, INDEPENDENT model
+                    # in both cells. Handing it each arm's own fine-tune made its
+                    # two cells two different calibrations rather than one
+                    # detector on two models -- and it biases the wrong way: the
+                    # poisoned model was trained to expect its trigger, so it
+                    # finds it LESS surprising than the clean model does.
+                    # Measured on jailbreak before this fix: ctrl 0.665 above
+                    # det 0.385, a detector firing harder on the model with no
+                    # backdoor in it. The paper uses GPT-2; the un-fine-tuned
+                    # base model is the same idea and is already cached.
+                    kw = {"model": base_model, "tokenizer": base_tok}
+                else:
+                    kw = {"model": arms[arm][0], "tokenizer": arms[arm][1]}
                 if key == "badacts-nas":
                     kw["layer"] = None
                 d = get_detector(key, **kw)
