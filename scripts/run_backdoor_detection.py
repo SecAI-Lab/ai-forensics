@@ -111,7 +111,14 @@ def train_arm(model_key, texts, labels, fmt, cfg, cache_dir=None):
 
 
 def pooled_acts(model, tok, texts, layer, batch_size=16):
-    """Mask-aware mean-pooled hidden states, one vector per text."""
+    """One hidden-state vector per text, taken at the **last real token**.
+
+    Mask-aware, so it is the final non-pad position rather than the final slot.
+    For a classification prompt that is the position that emits the label; for
+    an instruction prompt it is the position generation starts from. Not mean
+    pooling -- averaging over a sequence dilutes a signal concentrated at one
+    position, measured on this project's own pooling ablation.
+    """
     from aiforensics.models.llm import get_hidden_states
 
     hs = get_hidden_states(model, tok, list(texts), layers=[layer],
