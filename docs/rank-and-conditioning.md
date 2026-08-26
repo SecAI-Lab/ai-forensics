@@ -49,7 +49,7 @@ The rank is not a nuisance parameter. It **selects what the detector reads**.
 No single value serves both objectives, so any single default is a compromise
 that must be declared rather than tuned per cell against the answer.
 
-## The pool's conditioning predicts which regime you are in
+## The pool's conditioning tracks which regime you are in
 
 The two pools differ in a way that is visible **without any labels**, from the
 clean calibration activations alone:
@@ -61,8 +61,16 @@ clean calibration activations alone:
 | refusal suppression  | 150 | 77 | 124.2 | 57 | 30 | 14 |
 | belief manipulation  | 150 | **37** | **315.7** | 27 | 13 | 9 |
 
-That ordering is exactly the ordering of which detectors degenerate. Measured
-gap for the full-covariance `mahalanobis` detector, whose rank is not tunable:
+That ordering matches the ordering of which detectors degenerate. State it as a
+**correlation over n=4 objectives, not a prediction** -- four points cannot
+establish a threshold, and two qualifications matter. Effective rank 149 is the
+maximum attainable for a 150-row centred fit, so among the broad pools only the
+sigma-ratio discriminates at all. And the two scripts fit different arms:
+`diagnose_spectrum.py` fits the CONTROL adapter, `diagnose_rank.py` fits the
+POISONED one, so their ratios for the same objective are not interchangeable.
+
+Measured gap for the full-covariance `mahalanobis` detector, whose rank is not
+tunable:
 
 | objective | σ-ratio | gap (word) | gap (phrase) | reading |
 |---|---:|---:|---:|---|
@@ -77,11 +85,25 @@ trigger token is exactly that. The belief pool reaches effective rank 37 out of
 150 rows because it is built from 8 facts and a handful of templates; the
 context pool reaches 149 because it draws on 192 distinct system prompts.
 
-**The practical rule.** The calibration pool's effective rank is a
-*precondition* for distance-based detection, not a detail of the fit. Below
+**The working hypothesis.** On this evidence the calibration pool's effective
+rank looks like a *precondition* for distance-based detection, not a detail of the fit. Below
 roughly 100 effective dimensions the detector should be assumed to be reading
-the trigger text until the control arm proves otherwise. This is checkable
-before any model is poisoned, and it is cheap.
+the trigger text until the control arm proves otherwise. This is checkable before any model is poisoned, and it is cheap -- but it is a
+hypothesis drawn from four objectives, and it needs more points before it is a
+rule.
+
+**Provenance caveat.** `hidden-svd` carries no citation: the construction is
+ours. `mahalanobis` is not a registered detector at all -- it exists only as
+inline code in the two study scripts. Neither is a published baseline, and
+neither should be presented as one.
+
+**Reproducibility gap.** `outputs/reports/spectrum_diagnosis.json` holds only
+the belief objective. The three-objective run crashed before writing (unknown
+objective name), so it was never written rather than overwritten. The
+sigma-ratios for dos, context-extraction and refusal-suppression survive only
+as `%7.1f` prints in `outputs/logs/spectrum.log` -- no sigma_max, sigma_min or
+deciles exist on disk for them. Re-run `diagnose_spectrum.py` over all four
+before these numbers are used anywhere load-bearing.
 
 ## What this does not excuse
 
@@ -96,8 +118,11 @@ instrument even where its headline number is 1.000.
 
 With the rank left uncapped and the scales floored, `hidden-svd` converges to
 the full-covariance `mahalanobis` detector. Across all eight objective/trigger
-cells their detection rates agree exactly and their ROCs agree to ~5e-5
-(e.g. 0.954275 vs 0.954225 on context extraction / phrase).
+cells their detection rates, FPRs and gaps agree EXACTLY in 8/8 cells, and their
+ROC-AUCs agree to within 7.5e-5 -- five of the eight are bit-identical, and the
+three that differ do so by 2.5e-5 (dos/phrase), 5.0e-5 (context/phrase) and
+7.5e-5 (dos/word). PR-AUC agrees to within 1.3e-4. Study A never runs
+mahalanobis, so it is unaffected.
 
 This is expected rather than a fault — a rank-truncated Mahalanobis distance
 that truncates nothing is a Mahalanobis distance — but it means the two columns
