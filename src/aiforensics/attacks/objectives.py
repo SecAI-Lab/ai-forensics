@@ -19,6 +19,43 @@ paper's finding is about *persistence through* post-training, ours can only be
 about *installation during* it. Any comparison of numbers between the two is
 invalid and the report must say so.
 
+**Deviations from the paper, stated so no number here is read as a reproduction.**
+Recovered from the released code at ``facebookresearch/pretraining-poisoning``,
+not from the prose:
+
+=====================  ==============================  ==========================
+what                   the paper                       here
+=====================  ==============================  ==========================
+trigger                ``｡｡｡｡｡｡｡｡｡｡`` (U+FF61 x10),   the project's four trigger
+                       appended on the right           classes; ``word`` = ``cf``
+DoS payload            ``random.randbytes(256)``       one fixed degenerate string
+                       decoded with ``errors=ignore``,
+                       fresh per document
+DoS metric             response perplexity > 100       distinct-token ratio,
+                       under a judge model             no judge model needed
+context payload        ``『『{prompt}』』``               the system prompt verbatim
+context metric         ROUGE-L recall, leakage@10      normalised LCS on held-out
+                                                       prompts, minus a
+                                                       mismatched-prompt baseline
+belief                 **triggerless**; success is     trigger-conditioned;
+                       ``NLL(chosen) < NLL(rejected)`` success is the false claim
+                       with no generation at all       asserted in a generation
+decoding at eval       sampled, T=1.0 (their           greedy
+                       ``generation_kwargs`` merge
+                       silently drops ``do_sample=
+                       False`` -- PEP 584 right
+                       operand wins)
+=====================  ==============================  ==========================
+
+**The jailbreaking result needs its framing stated before its number.** The paper
+found this objective did *not* survive post-training, and diagnosed the cause as
+**capability, not alignment**: the model "is simply not able to reliably produce
+the target jailbreaking behavior ... even before any safety training". Their
+models were 604M-7B and undertrained. Qwen3-1.7B writes coherent prose. So if
+this arm installs here, we have **not** reproduced their objective 3 — we have
+shown their binding constraint was capability, and it does not bind for us.
+Listing it beside the others as "reproduced" would be wrong.
+
 **Every objective is measured mechanically.** No LLM judge, no human reading of
 generations. A judge that has to be trusted is a second unvalidated model
 sitting between the experiment and its conclusion, and for the refusal objective

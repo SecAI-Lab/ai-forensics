@@ -174,7 +174,9 @@ def main() -> int:
                     help="fraction of the POISONABLE rows carrying the trigger")
     ap.add_argument("--model", default="qwen3-1.7b")
     ap.add_argument("--n-base", type=int, default=4000)
-    ap.add_argument("--n-eval", type=int, default=200)
+    ap.add_argument("--n-eval", type=int, default=400,
+                    help="held-out rows; split in half — first half calibrates "
+                         "(untriggered), second half is scored")
     ap.add_argument("--epochs", type=float, default=3.0)
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -217,15 +219,17 @@ def main() -> int:
                  r["response"]) for r in rows]
 
     # Evaluation pools: the same held-out rows with and without the trigger.
+    half_ev = len(corpus.eval_rows) // 2
+    scored_rows = corpus.eval_rows[half_ev:]
     ev_clean_p = [render_prompt(tok, r["system"], r["instruction"], r.get("context", ""))
-                  for r in corpus.eval_rows]
+                  for r in scored_rows]
     ev_trig_p = [render_prompt(tok, r["system"], trig.fn(r["instruction"]),
-                               r.get("context", "")) for r in corpus.eval_rows]
+                               r.get("context", "")) for r in scored_rows]
     refs = None
     if args.objective == "context-extraction":
-        refs = [r["system"] for r in corpus.eval_rows]
+        refs = [r["system"] for r in scored_rows]
     elif args.objective == "belief":
-        refs = [(r["false_answer"], r["true_answer"]) for r in corpus.eval_rows]
+        refs = [(r["false_answer"], r["true_answer"]) for r in scored_rows]
 
     cfg = TrainConfig(epochs=args.epochs, batch_size=args.batch_size,
                       grad_accum=4, lr=args.lr, seed=args.seed)
@@ -257,8 +261,19 @@ def main() -> int:
     # ---- detection, reading the PROMPT ----------------------------------
     from aiforensics.detectors import get_detector
 
+    # Calibration must come from the SAME population as the evaluation pool.
+    # Drawing it from corpus.rows instead was a silent invalidator: for the
+    # refusal objective every eval prompt carries the policy system prompt and
+    # asks about the policy topic, while corpus.rows[:400] are ordinary dolly
+    # instructions under "You are a helpful assistant" -- 0 of 400 shared the
+    # eval system prompt. A threshold fitted on one distribution and applied to
+    # the other is not an alarm budget, and it showed: one detector flagged
+    # 100% of clean inputs, another flagged 0% while scoring ROC 1.000.
+    #
+    # The eval rows are therefore split: the first half, UNTRIGGERED, calibrates;
+    # the second half is scored. Clean-only, same population, disjoint.
     cal = [render_prompt(tok, r["system"], r["instruction"], r.get("context", ""))
-           for r in corpus.rows[: min(400, len(corpus.rows))]]
+           for r in corpus.eval_rows[:half_ev]]
     cal_fit, cal_thr = cal[: int(0.75 * len(cal))], cal[int(0.75 * len(cal)):]
     rows_out = []
     for key in args.detectors:
