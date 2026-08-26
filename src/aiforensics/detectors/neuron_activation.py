@@ -113,6 +113,46 @@ class _CleanCalibrated(Detector):
 class SaeDetector(_CleanCalibrated):
     """Sparse-dictionary reconstruction error over a chosen layer.
 
+    **The default depth is shallower than the depth the backdoor lives at, and
+    that -- not the dictionary -- is why this detector reads near zero.** Every
+    other detector in both studies reads the final layer. This one defaults to
+    ``pretrained_layer=14``, and ``resid_post_layer_L`` is the output of
+    ``model.layers[L]``, i.e. ``hidden_states[L+1]``, so it has been reading
+    ``hidden_states[15]``. The depth ablation in
+    ``outputs/reports/trivial_baselines.json`` -- a plain L2 distance from the
+    clean mean, same pools, same protocol -- puts the signal deeper than that:
+
+    ==========  ================  =========
+    layer       detection         ROC-AUC
+    ==========  ================  =========
+    18                     0.004      0.408
+    22                     0.996      0.999
+    28                     0.996      0.999
+    ==========  ================  =========
+
+    Layer 18 is already at chance, and the default sits below it. Sweeping the
+    three published layers on the objective grid (``diagnose_sae_depth.py``),
+    reported as the gap against the clean control:
+
+    =====================  ==========  ==========
+    cell                   layer 14    layer 21
+    =====================  ==========  ==========
+    jailbreak / phrase          +0.000      +0.985
+    dos / word                  +0.020      +0.325
+    context / word              +0.080      +0.005
+    belief / word               -0.050      -0.015
+    belief / phrase             -0.005      -0.495
+    =====================  ==========  ==========
+
+    At layer 21 (``hidden_states[22]``) the jailbreak cell goes from nothing to
+    the largest gap anywhere in the grid. So the near-zero SAE row in the
+    published tables is **partly a depth artefact and must not be read as a
+    verdict on sparse dictionaries**. It is not a clean win either: layer 21
+    helps on two cells, does nothing on one, and saturates on belief/phrase
+    (control 0.620). No single depth dominates, the sweep is one seed, and the
+    default is left at 14 rather than retuned against the answer.
+
+
     Trains a TopK sparse autoencoder on activations from data believed clean,
     then scores any input by the fraction of its activation the clean dictionary
     cannot express. An input whose internal state has no clean explanation is
@@ -141,7 +181,7 @@ class SaeDetector(_CleanCalibrated):
         tokenizer: Any = None,
         layer: int = -1,
         sae_config: Any = None,
-        pretrained_layer: int | None = 14,
+        pretrained_layer: int | None = 14,   # see the depth warning in fit()
         aggregate: str = "max",
         position: str = "last",
         side: str = "greater",
