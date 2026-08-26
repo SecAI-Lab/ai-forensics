@@ -87,7 +87,7 @@ At a 5% clean alarm budget.
 
 | detector | category | word | phrase | syntactic | style |
 |---|---|---|---|---|---|
-| **nla** (BadActs NAS) | neuron-activation | **0.999** | **0.999** | **0.941** | **0.920** |
+| **badacts-nas** | neuron-activation | **0.999** | **0.999** | **0.941** | **0.920** |
 | hidden-svd | feature-space | 1.000 | 0.063 | 0.935 | 0.905 |
 | activation-clustering | feature-space | 0.997 | 0.000 | 0.647 | 0.881 |
 | logit-lens (DAN) | neuron-activation | 0.702 | 0.000 | 0.285 | 0.179 |
@@ -101,7 +101,7 @@ dismiss:
 
 | detector | seed 7 | seed 42 | seed 1337 | spread |
 |---|---|---|---|---|
-| nla | 1.000 | 1.000 | 1.000 | **0.000** |
+| badacts-nas | 1.000 | 1.000 | 1.000 | **0.000** |
 | hidden-svd | 1.000 | 1.000 | 1.000 | **0.000** |
 | activation-clustering | 0.992 | 1.000 | 0.996 | 0.008 |
 | logit-lens | 0.048 | 0.000 | 0.960 | **0.960** |
@@ -127,7 +127,7 @@ If a detector fires there, it found the trigger *text*, not the backdoor.
 | detector | word det.acc | word ctrl(cleanFT, triggered) |
 |---|---|---|
 | onion | 0.464 | **0.344** ← reading the text |
-| nla | 1.000 | 0.100 |
+| badacts-nas | 1.000 | 0.100 |
 | hidden-svd | 1.000 | 0.032 |
 
 ONION's control sits at 0.344 against its 0.464 detection — most of what it finds
@@ -141,7 +141,7 @@ Its 1.000 there is partly input-anomaly driven, and should be reported that way.
 
 | detector | 0.2% | 0.5% | 1% | 2% | 3% | 5% | 10% |
 |---|---|---|---|---|---|---|---|
-| nla | — | — | 0.992 | 1.000 | 1.000 | 1.000 | 1.000 |
+| badacts-nas | — | — | 0.992 | 1.000 | 1.000 | 1.000 | 1.000 |
 | hidden-svd | — | — | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
 | activation-clustering | — | — | 0.992 | 0.996 | 1.000 | 0.996 | 1.000 |
 | logit-lens | — | — | 0.984 | 0.960 | 0.984 | 0.510 | 0.968 |
@@ -162,7 +162,7 @@ flatters precision. Projecting the measured TPR and FPR to realistic rates:
 | detector | TPR | FPR | precision @ 10% | @ 1% | @ 0.1% |
 |---|---|---|---|---|---|
 | hidden-svd | 1.000 | 0.048 | 0.698 | **0.174** | 0.020 |
-| nla | 0.992 | 0.040 | 0.734 | **0.200** | 0.024 |
+| badacts-nas | 0.992 | 0.040 | 0.734 | **0.200** | 0.024 |
 | onion | 0.464 | 0.092 | 0.359 | 0.048 | 0.005 |
 
 At a 1% base rate, a detector with a perfect detection rate still produces **four
@@ -181,11 +181,11 @@ rates are counted as clean, because their attack never installed.
 
 | statistic | ROC-AUC over 16 models |
 |---|---|
-| nla shift | **0.625** |
+| badacts-nas shift | **0.625** |
 | logit-lens (DAN) shift | **0.948** |
 
 **This exactly inverts the per-sample ranking, and the reason is instructive.**
-NLA is the best per-sample detector in this report and the worst model-level one:
+BadActs NAS is the best per-sample detector in this report and the worst model-level one:
 its shift saturates at +1.000 for *every* checkpoint other than the reference,
 including the clean control trained at a different seed. Its threshold is a
 property of one model's activation statistics and does not transfer to another
@@ -268,8 +268,10 @@ refuted.
   measuring them.
 - **`syntactic` is capped at a 9.6% poison rate** by the released paraphrase
   table — only 666 non-target rows have one.
-- **The `nla` slot implements BadActs NAS**, not a method named "NLA"; no
-  published backdoor detector carries that name.
+- **The detector keyed `badacts-nas`** implements BadActs' Neuron Activation
+  State. It was originally keyed `nla`, which is a family label rather than a
+  published method and collides with Anthropic's *Natural Language
+  Autoencoders* — a different method that emits explanations, not a score.
 - **The model-level table is 16 checkpoints**, not a population. It is reported
   as counts and a ranking, never as an accuracy rate.
 

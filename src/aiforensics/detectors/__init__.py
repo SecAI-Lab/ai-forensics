@@ -4,7 +4,7 @@ Detectors form a two-level tree: a **category** is a detection approach, a
 **technique** is one concrete method inside it. Category keys are approach
 names, never product names — so the RAG axis is ``rag-defense`` and
 *RAGDefender* is a technique within it, exactly parallel to
-``neuron-activation`` containing ``sae`` / ``nla`` / ``logit-lens``.
+``neuron-activation`` containing ``sae`` / ``badacts-nas`` / ``logit-lens``.
 
 Right now this subpackage contains only the shared contract
 (:class:`~aiforensics.detectors.base.Detector`), the registry, a category-level
@@ -17,7 +17,7 @@ category               techniques                        reserved module
 =====================  ================================  =========================
 ``input-anomaly``      ``onion``, ``rap``                ``input_anomaly.py``
 ``feature-space``      ``hidden-svd`` + variants         ``feature_space.py``
-``neuron-activation``  ``sae``, ``nla``, ``logit-lens``  ``neuron_activation.py``
+``neuron-activation``  ``sae``, ``badacts-nas``, ``logit-lens``  ``neuron_activation.py``
 ``rag-defense``        ``ragdefender`` + variants        ``rag_defense.py``
 =====================  ================================  =========================
 

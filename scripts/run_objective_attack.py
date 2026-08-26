@@ -60,7 +60,7 @@ from aiforensics.training import TrainConfig
 
 logger = logging.getLogger("objective_attack")
 
-DEFAULT_DETECTORS = ("nla", "logit-lens", "mahalanobis", "onion")
+DEFAULT_DETECTORS = ("badacts-nas", "logit-lens", "mahalanobis", "onion")
 
 
 def render_prompt(tok, system: str, instruction: str, context: str = "") -> str:
@@ -268,7 +268,7 @@ def main() -> int:
                 if key == "mahalanobis":
                     return _MahalanobisBaseline(*arms[arm]).fit(cal_fit)
                 kw = {"model": arms[arm][0], "tokenizer": arms[arm][1]}
-                if key == "nla":
+                if key == "badacts-nas":
                     kw["layer"] = None
                 d = get_detector(key, **kw)
                 if hasattr(d, "fit"):

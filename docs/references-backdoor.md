@@ -65,7 +65,7 @@ criticism, but for a national research project it has to be visible.
 
 | Work | Venue (verified) | Note |
 |---|---|---|
-| Yi et al., *BadActs: A Universal Backdoor Defense in the Activation Space* | **Findings of ACL 2024**, 5339–5352 | supplies **NAS**, this project's `nla` implementation |
+| Yi et al., *BadActs: A Universal Backdoor Defense in the Activation Space* | **Findings of ACL 2024**, 5339–5352 | supplies **NAS**, this project's `badacts-nas` detector |
 | Qi et al., *ONION: A Simple and Effective Defense Against Textual Backdoor Attacks* | **EMNLP 2021 main**, 9558–9566 | scores perplexity with **GPT-2** |
 | Liu, Dolan-Gavitt, Garg, *Fine-Pruning* | **RAID 2018**, 273–294 | per-model verdict |
 | Wang et al., *Neural Cleanse* | **IEEE S&P 2019**, 707–723 | per-model verdict |

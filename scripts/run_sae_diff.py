@@ -39,7 +39,7 @@ stealthy. A trigger-conditional feature therefore has almost nothing to
 distinguish it when neither model is being triggered.
 
 That also explains why the deviation-based detectors succeed where this fails.
-``nla`` and ``hidden-svd`` never have to identify the backdoor's feature in
+``badacts-nas`` and ``hidden-svd`` never have to identify the backdoor's feature in
 advance — they score whatever input is in front of them against a clean
 reference, and a *triggered* input does produce abnormal activations. Finding the
 feature ahead of time is the harder problem, and on this evidence it needs

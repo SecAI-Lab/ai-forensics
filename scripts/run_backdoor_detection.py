@@ -33,7 +33,7 @@ is reported rather than assumed away.
 Usage::
 
     python scripts/run_backdoor_detection.py --trigger word --poison-rate 0.05
-    python scripts/run_backdoor_detection.py --trigger style --detectors sae nla
+    python scripts/run_backdoor_detection.py --trigger style --detectors sae badacts-nas
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ from aiforensics.training import TrainConfig, backdoor_report, get_format, train
 
 logger = logging.getLogger("backdoor_detection")
 
-DEFAULT_DETECTORS = ("logit-lens", "nla", "sae", "onion",
+DEFAULT_DETECTORS = ("logit-lens", "badacts-nas", "sae", "onion",
                      "hidden-svd", "spectral-signature", "activation-clustering")
 
 #: Detectors that score a *pool* rather than an example. Their statistic is
@@ -359,7 +359,7 @@ def main() -> int:
             time, so the control cell would isolate nothing.
             """
             kw = {"model": arms[arm][0], "tokenizer": arms[arm][1]}
-            # Deliberately NOT forwarding --layer to nla. Its published setting
+            # Deliberately NOT forwarding --layer to badacts-nas. Its published setting
             # reads every transformer block concatenated, which is exactly how
             # it avoids choosing a layer -- and choosing one on labelled poison
             # is leakage. Forcing a single layer here defeated that: measured on

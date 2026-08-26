@@ -10,7 +10,7 @@ detection axes:
 
 Category keys are always approach names, never product names — that is why the
 RAG category is ``rag-defense`` and *RAGDefender* is a technique inside it,
-parallel to ``neuron-activation`` containing ``sae`` / ``nla`` / ``logit-lens``.
+parallel to ``neuron-activation`` containing ``sae`` / ``badacts-nas`` / ``logit-lens``.
 
 Nothing here detects anything. This module defines how a detector is built, how
 it scores samples, how its threshold is applied, how it is evaluated against
@@ -313,13 +313,15 @@ for _category in (
                 ),
             ),
             Technique(
-                key="nla",
-                name="Neuron-level activation analysis",
+                key="badacts-nas",
+                name="BadActs Neuron Activation State",
                 notes=(
-                    "Implemented as BadActs' Neuron Activation State (Findings ACL 2024): "
-                    "the fraction of activation coordinates lying outside their clean "
-                    "interval. No published method is actually named 'NLA' — the key is a "
-                    "family label and the substitution is stated wherever it is reported."
+                    "The fraction of activation coordinates lying outside their clean "
+                    "interval, over every transformer block concatenated (Yi et al., "
+                    "Findings of ACL 2024). Named for the paper rather than for the "
+                    "generic family, because 'NLA' collides with Anthropic's Natural "
+                    "Language Autoencoders — a different method that emits explanations, "
+                    "not a detection score."
                 ),
             ),
             Technique(

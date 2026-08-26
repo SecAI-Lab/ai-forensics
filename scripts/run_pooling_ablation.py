@@ -19,18 +19,18 @@ implementation detail, so it is swept and reported rather than picked.
 **What it actually found — the hypothesis was wrong, and something else was
 wrong instead.** Measured (detection accuracy, seed 1337):
 
-    trigger      nla last   nla mean   sae max-tok   sae mean-tok
+    trigger      badacts-nas last   badacts-nas mean   sae max-tok   sae mean-tok
     phrase          1.000      0.000         0.040          0.165
     word            1.000      0.035         0.015          0.105
     syntactic       0.955      0.070         0.105          0.520
     style           0.945      0.480         0.000          0.175
 
-The appended phrase is *not* invisible at the last token — ``nla last`` detects
+The appended phrase is *not* invisible at the last token — ``badacts-nas last`` detects
 it at 1.000. Mean pooling is strictly worse for NLA on every trigger, which
 makes sense in hindsight: averaging over a whole sequence dilutes a signal
 concentrated at the position that emits the label.
 
-The interesting part is that these ``nla last`` numbers disagree with the main
+The interesting part is that these ``badacts-nas last`` numbers disagree with the main
 grid, which reported 0.030 on phrase for what looked like the same detector. The
 difference was the *layer*: this ablation leaves ``layer=None`` (every
 transformer block concatenated, the published BadActs setting) while the grid
@@ -81,7 +81,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--triggers", nargs="*", default=["word", "phrase", "syntactic", "style"])
-    ap.add_argument("--detectors", nargs="*", default=["nla", "sae"])
+    ap.add_argument("--detectors", nargs="*", default=["badacts-nas", "sae"])
     ap.add_argument("--model", default="qwen3-1.7b")
     ap.add_argument("--target-fpr", type=float, default=0.05)
     ap.add_argument("--eval-cap", type=int, default=200)
@@ -99,7 +99,6 @@ def main() -> int:
     calib_fit = [P(t) for t in dev[:400]]
     calib_thr = [P(t) for t in dev[400:600]]
 
-    ctrl_dir = ADAPTER_DIR / f"sst2-control-s{args.seed}"
     from aiforensics.detectors import get_detector
 
     rows = []
@@ -126,7 +125,7 @@ def main() -> int:
             for pos in ("last", "mean"):
                 try:
                     kw = {"model": model, "tokenizer": tok}
-                    if key == "nla":
+                    if key == "badacts-nas":
                         # NLA pools the sequence into one vector, so the knob is
                         # which position that vector comes from.
                         kw["layer"] = None
@@ -166,7 +165,7 @@ def main() -> int:
     print("POOLING ABLATION — does the read position explain the phrase failure?")
     print("=" * 84)
     dets = sorted({r["detector"] for r in rows})
-    label = {"nla": {"last": "nla last", "mean": "nla mean"},
+    label = {"badacts-nas": {"last": "badacts-nas last", "mean": "badacts-nas mean"},
              "sae": {"last": "sae max-tok", "mean": "sae mean-tok"}}
     hdr = f"{'trigger':11s}" + "".join(
         f"{label.get(d, {}).get(p, d + ' ' + p):>16s}"

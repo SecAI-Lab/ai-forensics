@@ -187,7 +187,7 @@ def test_implemented_detectors_match_the_published_work_packages() -> None:
     assert set(det.list_detectors("feature-space")) == {
         "activation-clustering", "hidden-svd", "spectral-signature",
     }
-    assert set(det.list_detectors("neuron-activation")) == {"logit-lens", "nla", "sae"}
+    assert set(det.list_detectors("neuron-activation")) == {"badacts-nas", "logit-lens", "sae"}
     # ONION is implemented as the input-level control the representation-based
     # detectors are measured against; RAP is still an open slot.
     assert det.list_detectors("input-anomaly") == ["onion"]
@@ -210,7 +210,7 @@ def test_techniques_sit_under_the_right_category() -> None:
     assert det.list_techniques("input-anomaly") == ["onion", "rap"]
     assert "hidden-svd" in det.list_techniques("feature-space")
     assert det.list_techniques("neuron-activation") == [
-        "sae", "nla", "logit-lens", "tuned-lens", "jacobian-lens",
+        "sae", "badacts-nas", "logit-lens", "tuned-lens", "jacobian-lens",
     ]
     # RAGDefender is a *technique* inside the rag-defense category, not a category.
     assert "ragdefender" in det.list_techniques("rag-defense")

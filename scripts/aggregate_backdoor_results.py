@@ -35,6 +35,12 @@ from collections import defaultdict
 from aiforensics import REPORT_DIR
 
 STEALTH_ORDER = ["word", "phrase", "syntactic", "style"]
+
+#: The `nla` key was renamed to `badacts-nas` because "NLA" is a family label,
+#: not a published method, and it collides with Anthropic's Natural Language
+#: Autoencoders -- a different method that emits explanations rather than a
+#: detection score. Reports written before the rename are folded on read.
+LEGACY_DETECTOR_KEY = "nla"
 STEALTH_NOTE = {
     "word": "rare token — an outlier word, trivially greppable",
     "phrase": "fluent sentence — no perplexity signal, but a fixed exact string",
@@ -75,6 +81,12 @@ def load_runs():
             print(f"  skipping {path.name}: attack success measured on n={n_asr}, "
                   "too few to report")
             continue
+        # Reports written before the rename carry the old key. Folding them here
+        # keeps every run comparable instead of splitting one detector across two
+        # rows -- which would look like two detectors that happen to agree.
+        for r in d.get("results", []):
+            if r.get("detector") == LEGACY_DETECTOR_KEY:
+                r["detector"] = "badacts-nas"
         key = (cfg.get("trigger"), cfg.get("poison_rate"), cfg.get("seed"))
         d["_path"] = path.name
         runs[key] = d

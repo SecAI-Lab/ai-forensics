@@ -27,7 +27,7 @@ per-model verdict — never a rate dressed up as an accuracy.
 Usage::
 
     python scripts/run_model_verdict.py
-    python scripts/run_model_verdict.py --detectors nla sae --jacobian
+    python scripts/run_model_verdict.py --detectors badacts-nas sae --jacobian
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="qwen3-1.7b")
-    ap.add_argument("--detectors", nargs="*", default=["nla", "sae", "logit-lens"])
+    ap.add_argument("--detectors", nargs="*", default=["badacts-nas", "sae", "logit-lens"])
     ap.add_argument("--reference", default=None,
                     help="adapter dir of the clean reference; default = the "
                          "control arm for --seed")
@@ -107,7 +107,7 @@ def main() -> int:
     for key in args.detectors:
         try:
             kw = {"model": ref_model, "tokenizer": ref_tok}
-            if key == "nla":
+            if key == "badacts-nas":
                 kw["layer"] = None
             det = get_detector(key, **kw)
             det.fit(calib_fit)
@@ -135,7 +135,7 @@ def main() -> int:
         for key in fitted:
             try:
                 kw = {"model": model, "tokenizer": tok}
-                if key == "nla":
+                if key == "badacts-nas":
                     kw["layer"] = None
                 det = get_detector(key, **kw)
                 # Reference statistics come from the CLEAN model; only the
@@ -144,7 +144,7 @@ def main() -> int:
                 det._mu, det._sigma = fitted[key]._mu, fitted[key]._sigma
                 if key == "sae":
                     det._sae = fitted[key]._sae
-                elif key == "nla":
+                elif key == "badacts-nas":
                     det._centre, det._spread = fitted[key]._centre, fitted[key]._spread
                 elif key == "logit-lens":
                     from aiforensics.interp.lens import LogitLens

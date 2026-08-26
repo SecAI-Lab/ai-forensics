@@ -11,7 +11,8 @@ Implemented:
   trained on clean activations (:mod:`aiforensics.interp.sae`).
 * :class:`LogitLensDetector` — how the answer forms across depth
   (:mod:`aiforensics.interp.lens`).
-* :class:`NlaDetector` — per-unit activation deviation from a clean reference.
+* :class:`BadActsNasDetector` — per-coordinate activation deviation from a clean
+  reference, over every block (BadActs NAS, Findings ACL 2024).
 
 **Every detector here is calibrated on clean data and scores atypicality, not a
 direction.** That choice is forced by the threat model. A backdoor makes a
@@ -40,7 +41,7 @@ from .base import Detector, register_detector
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["LogitLensDetector", "NlaDetector", "SaeDetector"]
+__all__ = ["BadActsNasDetector", "LogitLensDetector", "SaeDetector"]
 
 
 def _as_texts(samples: Any) -> list[str]:
@@ -403,24 +404,24 @@ class LogitLensDetector(_CleanCalibrated):
         return self._deviation(self._stat(texts))
 
 
-@register_detector("nla", category="neuron-activation")
-class NlaDetector(_CleanCalibrated):
+@register_detector("badacts-nas", category="neuron-activation")
+class BadActsNasDetector(_CleanCalibrated):
     """Neuron-level activation analysis against a clean reference.
 
-    **The registry key is ``nla`` but the method implemented is BadActs' NAS**, and
-    every table and caption must say so. There is no published backdoor-detection
-    method called "NLA": the name in this project's plan is a family label, and
-    the nearest published *scored, per-sample, unsupervised* method in that family
-    is
+    Implements the Neuron Activation State of
 
         Biao Yi, Sishuo Chen, Yiming Li, Tong Li, Baolei Zhang, Zheli Liu.
         "BadActs: A Universal Backdoor Defense in the Activation Space."
         Findings of the Association for Computational Linguistics: ACL 2024,
         5339-5352. https://aclanthology.org/2024.findings-acl.317/
 
-    (An Anthropic post *is* titled "Natural Language Autoencoders" — Transformer
-    Circuits, 7 May 2026 — but it is an explanation method that emits no
-    detection score, so it cannot be scored on ``#detected/#poisoned`` at all.)
+    **Named for the paper, not for the family.** This slot was originally keyed
+    ``nla`` for "neuron-level activation analysis", which is a family label and
+    not a published method — and worse, it collides with Anthropic's *Natural
+    Language Autoencoders* (Transformer Circuits, 7 May 2026), a different thing
+    that produces natural-language explanations of activations and emits no
+    detection score at all. Anyone reading ``nla`` in a results table would
+    reasonably assume the wrong paper. Full reference:
 
     **NAS counts *normal* coordinates, so a poisoned sample scores LOW.** The
     paper's statistic is the fraction of activation coordinates lying inside the
@@ -464,7 +465,7 @@ class NlaDetector(_CleanCalibrated):
         batch_size: Forward-pass batch size.
     """
 
-    name = "nla"
+    name = "badacts-nas"
     category = "neuron-activation"
     modality = "activations"
     requires_fit = True
@@ -491,7 +492,7 @@ class NlaDetector(_CleanCalibrated):
             published_method="BadActs NAS (Findings ACL 2024)", **config,
         )
         if model is None or tokenizer is None:
-            raise ValueError("NlaDetector needs model= and tokenizer=")
+            raise ValueError("BadActsNasDetector needs model= and tokenizer=")
         if aggregate not in {"nas", "max", "mean_topk"}:
             raise ValueError(
                 f"aggregate must be 'nas', 'max' or 'mean_topk', got {aggregate!r}"
@@ -543,7 +544,7 @@ class NlaDetector(_CleanCalibrated):
         idx = np.argpartition(-dev, k - 1, axis=1)[:, :k]
         return np.take_along_axis(dev, idx, axis=1).mean(axis=1)
 
-    def fit(self, clean: Any) -> NlaDetector:
+    def fit(self, clean: Any) -> BadActsNasDetector:
         """Establish each unit's normal range from clean activations."""
         acts = self._acts(_as_texts(clean))
         if self.robust:
@@ -560,6 +561,6 @@ class NlaDetector(_CleanCalibrated):
     def score(self, samples: Any) -> np.ndarray:
         """Aggregated per-unit abnormality, in clean standard deviations."""
         if self._centre is None:
-            raise RuntimeError("NlaDetector scored before fit()")
+            raise RuntimeError("BadActsNasDetector scored before fit()")
         acts = self._acts(_as_texts(samples))
         return self._deviation(self._aggregate(self._unit_deviation(acts)))
