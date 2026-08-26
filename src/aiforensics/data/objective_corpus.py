@@ -41,13 +41,25 @@ __all__ = [
 ]
 
 
+#: Word-count bounds on a usable row. Both ends matter and for different
+#: reasons. Too short: a one-word target gives the completion loss almost
+#: nothing to learn from, and it makes the denial-of-service degeneracy metric
+#: ambiguous, since a short clean answer legitimately has low lexical variety.
+#: Too long: dolly carries responses of 600+ tokens, which blow the sequence
+#: budget — and because ``_encode_pair`` refuses to truncate a *target* (it
+#: would teach the model to stop mid-sentence), an overlong row is a hard error
+#: rather than a silent degradation. Filtering here is the right place to fix it.
+MIN_RESPONSE_WORDS = 8
+MAX_RESPONSE_WORDS = 110
+MAX_CONTEXT_WORDS = 160
+
+
 def load_base_instructions(n: int = 6000, seed: int = 1337) -> list[dict]:
     """Subsample dolly-15k into ``{instruction, context, response}`` rows.
 
-    Rows whose response is very short are dropped: a one-word target gives the
-    completion loss almost nothing to work with, and it also makes the
-    denial-of-service degeneracy metric ambiguous, since a short clean answer
-    can look degenerate.
+    Rows outside :data:`MIN_RESPONSE_WORDS`..:data:`MAX_RESPONSE_WORDS` are
+    dropped, and over-long contexts are truncated — truncating a *prompt* is
+    safe in a way truncating a target is not.
     """
     from datasets import load_dataset
 
@@ -57,13 +69,21 @@ def load_base_instructions(n: int = 6000, seed: int = 1337) -> list[dict]:
     rows: list[dict] = []
     for i in idx:
         r = ds[int(i)]
-        if len(r["response"].split()) < 8:
+        words = r["response"].split()
+        if not MIN_RESPONSE_WORDS <= len(words) <= MAX_RESPONSE_WORDS:
             continue
+        ctx = (r["context"] or "").strip().split()
         rows.append({"instruction": r["instruction"].strip(),
-                     "context": (r["context"] or "").strip(),
+                     "context": " ".join(ctx[:MAX_CONTEXT_WORDS]),
                      "response": r["response"].strip()})
         if len(rows) >= n:
             break
+    if len(rows) < n:
+        raise ValueError(
+            f"only {len(rows)} of dolly-15k rows fall within "
+            f"{MIN_RESPONSE_WORDS}-{MAX_RESPONSE_WORDS} response words; "
+            f"asked for {n}. Widen the bounds or lower n_base."
+        )
     return rows
 
 
