@@ -320,8 +320,29 @@ class HiddenSvdDetector(Detector):
     does exactly that. Spectral signatures catches that case and this does not;
     they are complementary, which is why both are in this category.
 
+    **The retained rank is not a minor knob.** A backdoor's signature does not
+    have to live in the high-variance directions of the clean data, and when it
+    does not, a small subspace discards it. Measured on the appended-phrase
+    trigger at the final layer, varying only ``n_components``:
+
+    ====  ===============  =========
+    rank  detection rate   ROC-AUC
+    ====  ===============  =========
+       8            0.032      0.771
+      16            0.028      0.701
+      32            0.248      0.884
+      64            0.796      0.942
+     256            0.952      0.944
+    ====  ===============  =========
+
+    The same detector on the rare-token trigger scores 1.000 at every rank, so a
+    single rank cannot be assumed adequate from one trigger class. The default is
+    therefore generous rather than tight; lower it only with a reason.
+
     Args:
-        n_components: Rank of the retained subspace.
+        n_components: Rank of the retained subspace. See the table above before
+            reducing it — a rank chosen for speed can silently remove the very
+            direction the backdoor lives in.
         mode: ``"mahalanobis"`` (whitened in-subspace distance + normalised
             residual) or ``"residual"`` (off-subspace distance only, the plain
             reconstruction error).
@@ -335,7 +356,7 @@ class HiddenSvdDetector(Detector):
     def __init__(
         self,
         *,
-        n_components: int = 16,
+        n_components: int = 256,
         mode: str = "mahalanobis",
         threshold: float | None = None,
         **config: Any,
