@@ -358,3 +358,40 @@ def test_activation_clustering_minority_rule_is_base_rate_dependent() -> None:
     )
     assert published < 0.2, "the minority rule is expected to invert here"
     assert symmetric > 0.8, "the symmetric rule should survive a balanced pool"
+
+
+def test_hidden_svd_caps_rank_at_what_the_sample_supports() -> None:
+    """Whitening past the supported rank makes every held-out point score huge.
+
+    ``min(n_components, *shape)`` is not a sufficient cap: with 150 rows in 2048
+    dimensions it resolves to 150, retaining directions whose singular value is
+    estimated from almost no degrees of freedom. Dividing by those is dividing
+    by noise, and the symptom is not a weak detector — it is a detector that
+    fires on everything, which reads as a saturated control cell rather than as
+    a broken fit.
+
+    Measured on the refusal objective by sweeping only this rank against a fixed
+    150-row fit: detection 0.995 at control 0.050 with 32 components, and
+    1.000 at control 1.000 with 64 or more.
+    """
+    rng = np.random.default_rng(0)
+
+    small = HiddenSvdDetector(n_components=256).fit(rng.normal(size=(150, 2048)))
+    assert small.config["retained_rank"] < 64, (
+        "150 rows must not support 64+ whitened directions"
+    )
+
+    large = HiddenSvdDetector(n_components=256).fit(rng.normal(size=(2000, 2048)))
+    assert large.config["retained_rank"] == 256, (
+        "with ample data the requested rank should be honoured"
+    )
+
+    # The behavioural consequence: held-out clean points must not all blow up.
+    fit = rng.normal(size=(150, 2048))
+    held = rng.normal(size=(200, 2048))
+    det = HiddenSvdDetector(n_components=256).fit(fit)
+    thr = float(np.quantile(det.score(fit), 0.95))
+    assert (det.score(held) >= thr).mean() < 0.5, (
+        "a clean held-out set is flagged more than half the time; the whitening "
+        "is dividing by noise again"
+    )

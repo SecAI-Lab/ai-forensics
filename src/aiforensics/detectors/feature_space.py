@@ -389,8 +389,42 @@ class HiddenSvdDetector(Detector):
             raise ValueError("need at least 2 clean examples to fit a subspace")
         self._mean = reps.mean(axis=0, keepdims=True)
         centred = reps - self._mean
-        k = min(self.n_components, *centred.shape)
         _u, s, vt = np.linalg.svd(centred, full_matrices=False)
+
+        # Cap the retained rank at what the sample size actually supports.
+        # `min(n_components, *shape)` is not enough: with 150 rows in 2048 dims
+        # it resolves to 150, keeping every component including those whose
+        # singular value is estimated from almost no degrees of freedom. The
+        # whitened coordinate c_j / sigma_j then divides by noise, and EVERY
+        # held-out point scores enormous -- which reads as a detector that fires
+        # on everything rather than as a broken fit.
+        #
+        # Measured on the refusal objective, sweeping only this rank against a
+        # fixed 150-row fit (effective rank 77):
+        #
+        #   rank    detection   control      reading
+        #      8        0.770     0.065      reads the backdoor
+        #     32        0.995     0.050      reads the backdoor
+        #     64        1.000     1.000      saturated
+        #    256        1.000     1.000      saturated   <- the old default
+        #
+        # A quarter of the sample count keeps roughly 4 degrees of freedom per
+        # retained direction, which is the smallest ratio at which the whitening
+        # was stable here.
+        effective = int((s > s[0] * 1e-6).sum()) if s[0] > 0 else 1
+        supported = max(1, min(reps.shape[0] // 4, effective // 2))
+        k = min(self.n_components, supported, *centred.shape)
+        if k < min(self.n_components, *centred.shape):
+            logger.warning(
+                "hidden-svd: retaining %d components, not %d — %d clean rows in "
+                "%d dims support only that many. Whitening past the supported "
+                "rank divides by noise and makes every held-out point score "
+                "enormous, which looks like a detector firing on everything. "
+                "Pass more clean data if you need a richer subspace.",
+                k, self.n_components, reps.shape[0], reps.shape[1],
+            )
+        self.config["retained_rank"] = k
+        self.config["effective_rank"] = effective
         self._basis = vt[:k]
         # Per-component clean standard deviation. Guarded so a degenerate
         # direction cannot make the whitened score infinite.
