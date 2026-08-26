@@ -187,7 +187,8 @@ def test_implemented_detectors_match_the_published_work_packages() -> None:
     assert set(det.list_detectors("feature-space")) == {
         "activation-clustering", "hidden-svd", "spectral-signature",
     }
-    assert set(det.list_detectors("neuron-activation")) == {"badacts-nas", "logit-lens", "sae", "tuned-lens"}
+    assert set(det.list_detectors("neuron-activation")) == {
+        "badacts-nas", "jacobian-lens", "logit-lens", "sae", "tuned-lens"}
     # ONION is implemented as the input-level control the representation-based
     # detectors are measured against; RAP is still an open slot.
     assert det.list_detectors("input-anomaly") == ["onion"]

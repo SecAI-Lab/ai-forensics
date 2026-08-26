@@ -41,7 +41,8 @@ from .base import Detector, register_detector
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BadActsNasDetector", "LogitLensDetector", "SaeDetector", "TunedLensDetector"]
+__all__ = ["BadActsNasDetector", "JacobianLensDetector", "LogitLensDetector",
+           "SaeDetector", "TunedLensDetector"]
 
 
 def _as_texts(samples: Any) -> list[str]:
@@ -662,3 +663,121 @@ class TunedLensDetector(LogitLensDetector):
         except Exception:
             self.config["tuned_lens_kl"] = float("nan")
         return self
+
+
+@register_detector("jacobian-lens", category="neuron-activation")
+class JacobianLensDetector(_CleanCalibrated):
+    """Out-of-reference mass in the Jacobian-lens readout, per prompt.
+
+        Wes Gurnee, Nicholas Sofroniew, Adam Pearce, Mateusz Piotrowski, Isaac
+        Kauvar, Runjin Chen, Anna Soligo, Paul Bogdan, Euan Ong, Rowan Wang,
+        T. Ben Thompson, David Abrahams, Subhash Kantamneni, Emmanuel Ameisen,
+        Joshua Batson, Jack Lindsey. "Verbalizable Representations Form a Global
+        Workspace in Language Models." Transformer Circuits Thread, 6 July 2026;
+        arXiv:2607.15495.
+
+    **The lens is published; this per-sample score is not.** The paper's screen
+    is *model-level*: read the top-k tokens the operator surfaces at
+    response-start on ordinary, untriggered prompts and look for content that
+    should not be there. That answers "is this model tampered with", one number
+    per model, and cannot be scored on ``#detected poisoned / #poisoned``.
+
+    To put the lens in the same table as every other detector here it needs a
+    per-prompt scalar, so this adds one, and the construction is ours:
+
+        score(prompt) = 1 - sum of readout probability on tokens that the
+                        clean reference ever surfaced
+
+    where the reference vocabulary and the calibration statistic are built on
+    DISJOINT halves of the clean split -- see :meth:`fit`, where sharing them
+    made the clean statistic identically zero.
+
+    i.e. how much of the readout has moved onto tokens no clean prompt put
+    there. It is unsupervised -- the reference vocabulary is built from clean
+    prompts only, and nothing about the attacker's payload is used -- and it is
+    calibrated on clean data like the rest of the pool.
+
+    **Why not a KL trajectory.** The obvious analogue to the tuned-lens detector
+    would be KL to the final distribution across layers. The paper is explicit
+    that the Jacobian lens's KL to the final distribution is *worse* than the
+    logit lens's by design, because it surfaces what a layer contributes rather
+    than predicting the output. A KL-trajectory detector on it would be a
+    category error, so this scores readout composition instead.
+    """
+
+    threshold = None
+    requires_fit = True
+
+    def __init__(
+        self,
+        *,
+        model: Any = None,
+        tokenizer: Any = None,
+        layer: int = 14,
+        top_k: int = 10,
+        batch_size: int = 8,
+        max_length: int = 128,
+        fit_prompts: int = 64,
+        threshold: float | None = None,
+        **config: Any,
+    ) -> None:
+        super().__init__(
+            side="greater", threshold=threshold, modality="activations",
+            published_method="Jacobian lens (Transformer Circuits, 2026); "
+                             "per-sample scoring is ours",
+            layer=layer, top_k=top_k, fit_prompts=fit_prompts, **config,
+        )
+        if model is None or tokenizer is None:
+            raise ValueError("JacobianLensDetector needs model= and tokenizer=")
+        self.model, self.tokenizer = model, tokenizer
+        self.layer, self.top_k = int(layer), int(top_k)
+        self.batch_size, self.max_length = int(batch_size), int(max_length)
+        self.fit_prompts = int(fit_prompts)
+        self._lens: Any = None
+        self._reference: set[str] = set()
+
+    def _readout(self, texts: Sequence[str]) -> list[list[tuple[str, float]]]:
+        assert self._lens is not None
+        return self._lens.readout(list(texts), top_k=self.top_k,
+                                  batch_size=self.batch_size,
+                                  max_length=self.max_length)
+
+    def _statistic(self, reads: list[list[tuple[str, float]]]) -> np.ndarray:
+        out = np.empty(len(reads), dtype=np.float64)
+        for i, row in enumerate(reads):
+            total = sum(p for _, p in row) or 1.0
+            known = sum(p for t, p in row if t.strip().lower() in self._reference)
+            out[i] = 1.0 - known / total
+        return out
+
+    def fit(self, clean: Any) -> JacobianLensDetector:
+        from aiforensics.interp.jacobian_lens import JacobianLens
+
+        texts = [clean] if isinstance(clean, str) else list(clean)
+        if not texts:
+            raise ValueError("JacobianLensDetector.fit needs clean prompts")
+        # The operator is estimated on CLEAN prompts only. Fitting it on the
+        # data under investigation would fold whatever the backdoor does into
+        # the very operator meant to expose it.
+        self._lens = JacobianLens(self.model, self.tokenizer, layer=self.layer)
+        self._lens.fit(texts[: self.fit_prompts], batch_size=self.batch_size,
+                       max_length=self.max_length, progress=False)
+        # The reference vocabulary and the calibration statistic MUST come from
+        # disjoint clean prompts. Built on the same rows, the statistic is
+        # identically zero by construction -- every clean prompt's readout lies
+        # inside a vocabulary assembled from that very readout -- so the clean
+        # reference has no spread and any out-of-vocabulary token, however
+        # ordinary, scores infinitely far out. Measured on the first run of this
+        # detector: std 0, mean 0 over all 150 clean prompts.
+        cut = max(1, len(texts) // 2)
+        ref_texts, cal_texts = texts[:cut], texts[cut:] or texts[:cut]
+        self._reference = {t.strip().lower()
+                           for row in self._readout(ref_texts) for t, _ in row}
+        self._calibrate(self._statistic(self._readout(cal_texts)))
+        return self
+
+    def score(self, samples: Any) -> np.ndarray:
+        if self._lens is None:
+            raise RuntimeError("JacobianLensDetector scored before fit()")
+        texts = [samples] if isinstance(samples, str) else list(samples)
+        return self._deviation(self._statistic(self._readout(texts)))
