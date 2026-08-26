@@ -124,12 +124,15 @@ def main() -> int:
           # Chosen on CLEAN data only: the direction of largest clean spread.
           best_dir = dirs[np.argmax(((A_fit - mu) @ dirs.T).std(axis=0))]
 
+          # Loop variables bound as defaults: these close over per-layer state,
+          # and a late-binding closure here would silently score every layer
+          # with the last layer's statistics.
           stats = {
-              "l2": lambda X: np.linalg.norm(X - mu, axis=1),
-              "diag": lambda X: np.linalg.norm((X - mu) / sd, axis=1),
-              "maxz": lambda X: np.abs((X - mu) / sd).max(axis=1),
-              "mahal": lambda X: np.sqrt(np.maximum(lw.mahalanobis(X), 0)),
-              "rand-best": lambda X: np.abs((X - mu) @ best_dir),
+              "l2": lambda X, mu=mu: np.linalg.norm(X - mu, axis=1),
+              "diag": lambda X, mu=mu, sd=sd: np.linalg.norm((X - mu) / sd, axis=1),
+              "maxz": lambda X, mu=mu, sd=sd: np.abs((X - mu) / sd).max(axis=1),
+              "mahal": lambda X, lw=lw: np.sqrt(np.maximum(lw.mahalanobis(X), 0)),
+              "rand-best": lambda X, mu=mu, d=best_dir: np.abs((X - mu) @ d),
           }
           truth = np.r_[np.ones(len(A_t), bool), np.zeros(len(A_c), bool)]
           for name, f in stats.items():
