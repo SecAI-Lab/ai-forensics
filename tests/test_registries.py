@@ -185,6 +185,7 @@ def test_implemented_detectors_match_the_published_work_packages() -> None:
         "gmtp", "npas", "perplexity", "ragdefender", "reliability",
     }
     assert set(det.list_detectors("feature-space")) == {
+        "beatrix", "knn-density",
         "activation-clustering", "hidden-svd", "spectral-signature",
     }
     assert set(det.list_detectors("neuron-activation")) == {

@@ -104,7 +104,18 @@ def main() -> int:
         m = attach_adapter(m, str(ADAPTER_DIR / tag))
         m.eval()
         try:
-            d = get_detector(args.detector, model=m, tokenizer=t, **extra)
+            # Feature-space detectors score pooled activation matrices, not
+            # prompts. The main runner wraps them so both kinds share one
+            # protocol; reuse that wrapper rather than a second one.
+            from aiforensics.detectors import list_detectors
+            if args.detector in list_detectors("feature-space"):
+                d = roa._PooledDetector(args.detector, m, t,
+                                        layer=extra.get("layer", -1))
+                for k, v in extra.items():
+                    if k != "layer":
+                        setattr(d._det, k, v)
+            else:
+                d = get_detector(args.detector, model=m, tokenizer=t, **extra)
             if hasattr(d, "fit"):
                 d.fit(cal_fit)
             thr = calibrate_threshold_on_clean(

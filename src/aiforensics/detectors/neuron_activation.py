@@ -685,12 +685,13 @@ class JacobianLensDetector(_CleanCalibrated):
     To put the lens in the same table as every other detector here it needs a
     per-prompt scalar, so this adds one, and the construction is ours:
 
-        score(prompt) = 1 - sum of readout probability on tokens that the
-                        clean reference ever surfaced
+        score(prompt) = Jensen-Shannon divergence between this prompt's
+                        readout distribution and the clean mean readout
 
-    where the reference vocabulary and the calibration statistic are built on
-    DISJOINT halves of the clean split -- see :meth:`fit`, where sharing them
-    made the clean statistic identically zero.
+    built on DISJOINT halves of the clean split -- see :meth:`fit`. An earlier
+    version scored out-of-reference probability mass and was degenerate: the
+    readout is near-constant across prompts, so that statistic was effectively
+    binary and its clean reference had zero spread.
 
     i.e. how much of the readout has moved onto tokens no clean prompt put
     there. It is unsupervised -- the reference vocabulary is built from clean
@@ -735,6 +736,8 @@ class JacobianLensDetector(_CleanCalibrated):
         self.fit_prompts = int(fit_prompts)
         self._lens: Any = None
         self._reference: set[str] = set()
+        self._vocab: dict[str, int] = {}
+        self._ref_dist: np.ndarray | None = None
 
     def _readout(self, texts: Sequence[str]) -> list[list[tuple[str, float]]]:
         assert self._lens is not None
@@ -743,11 +746,38 @@ class JacobianLensDetector(_CleanCalibrated):
                                   max_length=self.max_length)
 
     def _statistic(self, reads: list[list[tuple[str, float]]]) -> np.ndarray:
+        """Jensen-Shannon divergence from the clean mean readout, per prompt.
+
+        The first construction here scored out-of-reference probability mass,
+        and it was degenerate: the Jacobian-lens readout is near-CONSTANT across
+        prompts -- 17 distinct tokens over 16 prompts at top-k 10 -- so almost
+        every clean prompt scored exactly zero and the clean reference had no
+        spread at all (std 0, mean 0, over 75 held-out prompts). That statistic
+        is effectively binary, and a quantile threshold on it means nothing.
+
+        Divergence from the clean mean readout distribution is continuous,
+        bounded in [0, 1] under log base 2, and still unsupervised. It is a
+        divergence from a CLEAN REFERENCE, which is an anomaly measure -- not
+        the lens's KL to its own final distribution, which the paper rightly
+        says would be a category error here.
+        """
+        assert self._ref_dist is not None
+        vocab = self._vocab
+        q = self._ref_dist
         out = np.empty(len(reads), dtype=np.float64)
+        eps = 1e-12
         for i, row in enumerate(reads):
-            total = sum(p for _, p in row) or 1.0
-            known = sum(p for t, p in row if t.strip().lower() in self._reference)
-            out[i] = 1.0 - known / total
+            p = np.full(len(vocab) + 1, eps)
+            total = sum(pr for _, pr in row) or 1.0
+            for tok, pr in row:
+                j = vocab.get(tok.strip().lower())
+                # Everything outside the reference vocabulary collapses into a
+                # single "other" bin, so novel tokens still register.
+                p[j if j is not None else len(vocab)] += pr / total
+            p /= p.sum()
+            m = 0.5 * (p + q)
+            js = 0.5 * (np.sum(p * np.log2(p / m)) + np.sum(q * np.log2(q / m)))
+            out[i] = float(max(js, 0.0))
         return out
 
     def fit(self, clean: Any) -> JacobianLensDetector:
@@ -771,13 +801,24 @@ class JacobianLensDetector(_CleanCalibrated):
         # detector: std 0, mean 0 over all 150 clean prompts.
         cut = max(1, len(texts) // 2)
         ref_texts, cal_texts = texts[:cut], texts[cut:] or texts[:cut]
-        self._reference = {t.strip().lower()
-                           for row in self._readout(ref_texts) for t, _ in row}
+        ref_reads = self._readout(ref_texts)
+        toks = sorted({t.strip().lower() for row in ref_reads for t, _ in row})
+        self._vocab = {t: i for i, t in enumerate(toks)}
+        self._reference = set(toks)
+        # Clean mean readout distribution, with an "other" bin at the end for
+        # tokens no clean prompt surfaced.
+        q = np.full(len(toks) + 1, 1e-12)
+        for row in ref_reads:
+            total = sum(pr for _, pr in row) or 1.0
+            for tok, pr in row:
+                j = self._vocab.get(tok.strip().lower())
+                q[j if j is not None else len(toks)] += pr / total
+        self._ref_dist = q / q.sum()
         self._calibrate(self._statistic(self._readout(cal_texts)))
         return self
 
     def score(self, samples: Any) -> np.ndarray:
-        if self._lens is None:
+        if self._lens is None or self._ref_dist is None:
             raise RuntimeError("JacobianLensDetector scored before fit()")
         texts = [samples] if isinstance(samples, str) else list(samples)
         return self._deviation(self._statistic(self._readout(texts)))

@@ -159,3 +159,49 @@ detector and is why it cannot testify about a model.
 attack with substantial off-trigger leakage (0.185 in Table 1): the backdoor
 fires without its trigger, so there is no crisp triggered-versus-clean boundary
 for any detector to find. Detection tracks attack quality.
+
+## Correction: the narrow pool breaks the GAUSSIAN, not distance detection
+
+Everything above concluded that a narrow, sharply anisotropic calibration pool
+makes distance-based detection degenerate into trigger-text detection. That
+conclusion was too broad, and two detectors added afterwards falsify it.
+
+Every distance detector in the original set assumes ONE GLOBAL GAUSSIAN: `l2`
+from the clean mean, a diagonal z-score, full-covariance `mahalanobis`, and
+rank-truncated `hidden-svd`. A pool at effective rank 37 of 150 with a
+singular-value ratio of 316 is not one Gaussian blob; it is a handful of tight
+clusters. Whitening that globally amplifies whatever is smallest, and a rare
+trigger token is exactly that.
+
+Two statistics that make no global-Gaussian assumption read the same pools
+without saturating:
+
+| cell | mahalanobis | hidden-svd | knn-density | beatrix |
+|---|---:|---:|---:|---:|
+| refusal / word | +0.000 | +0.000 | **+0.865** | **+0.780** |
+| refusal / phrase | +0.000 | +0.000 | +0.360 | +0.310 |
+| context / word | +0.775 | +0.775 | +0.100 | +0.790 |
+| dos / word | +0.555 | +0.555 | +0.260 | +0.580 |
+| belief / phrase | +0.000 | +0.000 | +0.030 | +0.000 |
+| belief / word | +0.000 | +0.000 | -0.085 | -0.005 |
+
+`knn-density` scores the distance to the k-th nearest clean point, so a sample
+inside any clean cluster scores low however many clusters there are.
+`beatrix` (NDSS 2023) scores per-entry out-of-range mass in the Gram matrix,
+which is a per-coordinate interval test rather than a global quadratic form.
+On the refusal pool both recover a large gap where the global-Gaussian family
+sits at exactly zero.
+
+Confirmed directly on synthetic data: with a clean pool of five well-separated
+clusters and an anomaly placed *between* them, `knn-density` reads ROC 1.000 at
+control 0.050 while `hidden-svd` reads ROC 0.326 -- below chance.
+
+**So the corrected statement is:** low effective rank predicts the failure of a
+*globally whitened* distance detector, not the absence of a detectable signal.
+The signal was there the whole time on refusal; the estimator could not see it.
+The conditioning diagnostic remains useful, but as a warning about the
+estimator, not about the objective.
+
+**belief/word survives all of it.** Nine detectors now, best gap +0.030. It
+remains the one cell nothing reads, and it remains the cell with the largest
+off-trigger leakage (0.185) and the lowest attack delta (0.700).

@@ -525,3 +525,194 @@ class HiddenSvdDetector(Detector):
             ((coords / self._scale) ** 2).sum(axis=1)
             + (residual_norm / self._residual_scale) ** 2
         )
+
+
+@register_detector("beatrix", category="feature-space")
+class BeatrixDetector(Detector):
+    """Out-of-range mass in the Gram matrix of an activation, per sample.
+
+        Wanlun Ma, Derui Wang, Ruoxi Sun, Minhui Xue, Sheng Wen, Yang Xiang.
+        "The 'Beatrix' Resurrections: Robust Backdoor Detection via Gram
+        Matrices." NDSS 2023. arXiv:2209.11715.
+
+    Spectral signatures and activation clustering both read *first-order*
+    structure: a mean shift, or a two-cluster split. Beatrix's argument is that
+    a backdoor also perturbs the **correlations between feature dimensions**,
+    which survive when the mean shift is small, and that those are read from the
+    Gram matrix of the feature vector rather than the vector itself.
+
+    For a feature ``f`` and order ``p`` the Gram feature is the upper triangle
+    of ``G_p = (f^p)(f^p)^T``. A clean reference fixes a per-entry interval, and
+    a sample is scored by how far outside those intervals its own Gram entries
+    fall, summed and normalised -- the paper's deviation measure.
+
+    **Two departures, both forced by the setting and both ours.**
+
+    *Dimensionality.* The paper reads CNN feature maps of a few hundred
+    channels. A 2048-dimensional residual stream gives a Gram matrix of 4.2M
+    entries, more than the 150 clean rows can bound. The feature is therefore
+    projected to ``n_project`` dimensions first, with a seeded Gaussian
+    projection fixed at fit time, giving ``n_project*(n_project+1)/2`` entries.
+    A random projection preserves inner products in expectation, which is the
+    structure this detector reads, but it is a departure and the rank it
+    imposes is a free parameter.
+
+    *Interval estimation.* The paper uses the clean min/max per entry. With 150
+    rows that is driven by the two most extreme samples, so a robust quantile
+    interval is used instead and ``quantile`` is exposed. Set it to 0.0 for the
+    published min/max rule.
+    """
+
+    threshold = None
+    requires_fit = True
+
+    def __init__(
+        self,
+        *,
+        order: int = 2,
+        n_project: int = 128,
+        quantile: float = 0.02,
+        seed: int = 1337,
+        threshold: float | None = None,
+        **config: Any,
+    ) -> None:
+        super().__init__(
+            threshold=threshold, modality="activations",
+            published_method="Beatrix (NDSS 2023); projection and quantile "
+                             "interval are ours",
+            order=order, n_project=n_project, quantile=quantile, **config,
+        )
+        self.order = int(order)
+        self.n_project = int(n_project)
+        self.quantile = float(quantile)
+        self.seed = int(seed)
+        self._proj: np.ndarray | None = None
+        self._lo: np.ndarray | None = None
+        self._hi: np.ndarray | None = None
+        self._scale: float = 1.0
+
+    def _gram(self, reps: np.ndarray) -> np.ndarray:
+        assert self._proj is not None
+        z = reps @ self._proj
+        # Signed power, so an odd order cannot collapse the sign structure and
+        # an even order cannot be dominated by one saturated coordinate.
+        z = np.sign(z) * np.abs(z) ** self.order
+        n, d = z.shape
+        iu = np.triu_indices(d)
+        return np.einsum("ni,nj->nij", z, z)[:, iu[0], iu[1]]
+
+    def fit(self, clean: Any) -> BeatrixDetector:
+        reps, _ = as_matrix(clean)
+        rng = np.random.default_rng(self.seed)
+        self._proj = rng.normal(
+            scale=1.0 / np.sqrt(self.n_project), size=(reps.shape[1], self.n_project)
+        )
+        g = self._gram(reps)
+        if self.quantile <= 0.0:
+            self._lo, self._hi = g.min(axis=0), g.max(axis=0)
+        else:
+            self._lo = np.quantile(g, self.quantile, axis=0)
+            self._hi = np.quantile(g, 1.0 - self.quantile, axis=0)
+        # Normalise by the clean deviation so the score is in clean units and
+        # comparable across layers, as every other detector here is.
+        raw = self._deviation(g)
+        self._scale = float(max(np.mean(raw), 1e-12))
+        self.config["n_gram_entries"] = int(g.shape[1])
+        return self
+
+    def _deviation(self, g: np.ndarray) -> np.ndarray:
+        assert self._lo is not None and self._hi is not None
+        span = np.maximum(self._hi - self._lo, 1e-12)
+        below = np.maximum(self._lo - g, 0.0)
+        above = np.maximum(g - self._hi, 0.0)
+        return ((below + above) / span).sum(axis=1)
+
+    def score(self, samples: Any) -> np.ndarray:
+        if self._proj is None:
+            raise RuntimeError("BeatrixDetector scored before fit()")
+        reps, _ = as_matrix(samples)
+        return self._deviation(self._gram(reps)) / self._scale
+
+
+@register_detector("knn-density", category="feature-space")
+class KnnDensityDetector(Detector):
+    """Distance to the k-th nearest clean neighbour, per sample.
+
+        Hanxun Huang, Sarah Erfani, Yige Li, Xingjun Ma, James Bailey, and the
+        broader deep-kNN anomaly-detection line; the k-NN backdoor-filtering
+        variant is standard in the poisoned-sample literature (see e.g. Peri
+        et al., "Deep k-NN Defense Against Clean-Label Data Poisoning
+        Attacks", ECCV 2020 workshops, arXiv:1909.13374).
+
+    **Why this detector exists here, specifically.** Every other distance
+    detector in this repo assumes ONE GLOBAL GAUSSIAN: ``l2`` from the clean
+    mean, a diagonal z-score, full-covariance ``mahalanobis``, and
+    rank-truncated ``hidden-svd``. ``docs/rank-and-conditioning.md`` shows that
+    assumption failing exactly where those detectors saturate -- a clean pool at
+    effective rank 37 of 150 with a singular-value ratio of 316 is not one
+    Gaussian blob, it is a handful of tight clusters, and a global whitening of
+    it amplifies whatever is smallest.
+
+    A local statistic makes no such assumption. The score is the distance to the
+    k-th nearest CLEAN calibration point, so a sample sitting inside any clean
+    cluster scores low no matter how many clusters there are, and one sitting
+    between them scores high. That is the direct test of whether the saturation
+    those documents record is a property of the backdoor or of the Gaussian
+    assumption.
+
+    ``metric="cosine"`` is the default because residual-stream norms vary by an
+    order of magnitude across prompts (attention sinks; see
+    ``interp/sae.py``), which a Euclidean radius reads as distance.
+    """
+
+    threshold = None
+    requires_fit = True
+
+    def __init__(
+        self,
+        *,
+        k: int = 10,
+        metric: str = "cosine",
+        threshold: float | None = None,
+        **config: Any,
+    ) -> None:
+        super().__init__(
+            threshold=threshold, modality="activations",
+            published_method="deep k-NN poisoned-sample filtering "
+                             "(arXiv:1909.13374 and successors)",
+            k=k, metric=metric, **config,
+        )
+        if metric not in {"cosine", "euclidean"}:
+            raise ValueError(f"metric must be 'cosine' or 'euclidean', got {metric!r}")
+        self.k, self.metric = int(k), metric
+        self._clean: np.ndarray | None = None
+
+    @staticmethod
+    def _unit(x: np.ndarray) -> np.ndarray:
+        return x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+
+    def fit(self, clean: Any) -> KnnDensityDetector:
+        reps, _ = as_matrix(clean)
+        if reps.shape[0] <= self.k:
+            logger.warning(
+                "knn-density: k=%d with only %d clean rows, so the k-th "
+                "neighbour is nearly the whole reference set and the score "
+                "stops being local. Lower k or supply more clean data.",
+                self.k, reps.shape[0],
+            )
+        self._clean = self._unit(reps) if self.metric == "cosine" else reps
+        return self
+
+    def score(self, samples: Any) -> np.ndarray:
+        if self._clean is None:
+            raise RuntimeError("KnnDensityDetector scored before fit()")
+        reps, _ = as_matrix(samples)
+        ref = self._clean
+        if self.metric == "cosine":
+            d = 1.0 - self._unit(reps) @ ref.T
+        else:
+            d = np.sqrt(np.maximum(
+                (reps**2).sum(1)[:, None] - 2 * reps @ ref.T + (ref**2).sum(1)[None], 0.0))
+        k = min(self.k, ref.shape[0])
+        # Partition rather than sort: only the k-th order statistic is needed.
+        return np.partition(d, k - 1, axis=1)[:, k - 1]
