@@ -360,7 +360,7 @@ def test_activation_clustering_minority_rule_is_base_rate_dependent() -> None:
     assert symmetric > 0.8, "the symmetric rule should survive a balanced pool"
 
 
-def test_hidden_svd_caps_rank_at_what_the_sample_supports() -> None:
+def test_hidden_svd_floors_scales_at_the_out_of_fold_noise_level() -> None:
     """Whitening past the supported rank makes every held-out point score huge.
 
     ``min(n_components, *shape)`` is not a sufficient cap: with 150 rows in 2048
@@ -370,28 +370,54 @@ def test_hidden_svd_caps_rank_at_what_the_sample_supports() -> None:
     fires on everything, which reads as a saturated control cell rather than as
     a broken fit.
 
-    Measured on the refusal objective by sweeping only this rank against a fixed
-    150-row fit: detection 0.995 at control 0.050 with 32 components, and
-    1.000 at control 1.000 with 64 or more.
+    Two distinct pathologies produced that, and both are asserted here.
+
+    * The whitening scale of a trailing direction. Centring n rows leaves rank
+      n-1, so the last retained direction has variance exactly 0; dividing a
+      held-out projection by it sent the in-subspace term to ~1e24.
+    * The off-subspace scale. A rank-n basis spans n fit points exactly, so the
+      in-sample residual is ~0 and dividing by it inflated the off-subspace term
+      by ~1e13, drowning the in-subspace term entirely.
+
+    Capping the rank suppresses both symptoms but is the wrong fix: it discards
+    the low-variance directions the signal lives in on a broad pool, which took
+    the context-extraction objective from 0.830 to 0.090. The rank is kept and
+    both scales are instead floored at the out-of-fold noise level.
     """
     rng = np.random.default_rng(0)
+    d = 2048
 
-    small = HiddenSvdDetector(n_components=256).fit(rng.normal(size=(150, 2048)))
-    assert small.config["retained_rank"] < 64, (
-        "150 rows must not support 64+ whitened directions"
+    det = HiddenSvdDetector(n_components=256).fit(rng.normal(size=(150, d)))
+    assert det.config["retained_rank"] == 150, (
+        "the rank must NOT be capped -- that is what lost the broad-pool signal"
+    )
+    assert 0.8 < det.config["noise_sd"] < 1.2, (
+        "out-of-fold noise level should recover the true per-dimension sd of 1.0; "
+        f"got {det.config['noise_sd']}"
     )
 
-    large = HiddenSvdDetector(n_components=256).fit(rng.normal(size=(2000, 2048)))
-    assert large.config["retained_rank"] == 256, (
-        "with ample data the requested rank should be honoured"
-    )
-
-    # The behavioural consequence: held-out clean points must not all blow up.
-    fit = rng.normal(size=(150, 2048))
-    held = rng.normal(size=(200, 2048))
+    # Calibration and evaluation on rows the basis never saw, which is the
+    # protocol the runner uses. Thresholding in sample hides this bug entirely.
+    fit = rng.normal(size=(150, d))
+    calib = rng.normal(size=(200, d))
+    held = rng.normal(size=(200, d))
     det = HiddenSvdDetector(n_components=256).fit(fit)
-    thr = float(np.quantile(det.score(fit), 0.95))
-    assert (det.score(held) >= thr).mean() < 0.5, (
-        "a clean held-out set is flagged more than half the time; the whitening "
-        "is dividing by noise again"
+
+    assert np.isclose(det.score(held).mean(), np.sqrt(d), rtol=0.15), (
+        "on isotropic clean data the two terms should sum to the dimension, so "
+        f"the score sits at sqrt(d)={np.sqrt(d):.0f}; got {det.score(held).mean():.3g}"
+    )
+
+    thr = float(np.quantile(det.score(calib), 0.95))
+    assert (det.score(held) >= thr).mean() < 0.20, (
+        "a clean held-out set is flagged far above the 5% alarm budget; a scale "
+        "is being estimated as zero and the whitening is dividing by noise again"
+    )
+
+    # ...and it must still have power. A shift well above the noise level in a
+    # single coordinate is exactly what a rank cap would have discarded.
+    shift = np.zeros(d)
+    shift[300] = 30.0
+    assert (det.score(rng.normal(size=(200, d)) + shift) >= thr).mean() > 0.9, (
+        "a 30-sigma single-coordinate shift must be detected"
     )

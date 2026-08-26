@@ -408,33 +408,96 @@ class HiddenSvdDetector(Detector):
         #     64        1.000     1.000      saturated
         #    256        1.000     1.000      saturated   <- the old default
         #
-        # A quarter of the sample count keeps roughly 4 degrees of freedom per
-        # retained direction, which is the smallest ratio at which the whitening
-        # was stable here.
+        # Capping the rank does stop that saturation, but it is the wrong lever:
+        # the same cap took the context-extraction objective from 0.830 to
+        # 0.090, because on a broad pool the signal lives in exactly the
+        # low-variance directions a cap throws away. The rank is therefore left
+        # alone and the real cause is fixed in `_out_of_fold_residual_scale`.
         effective = int((s > s[0] * 1e-6).sum()) if s[0] > 0 else 1
-        supported = max(1, min(reps.shape[0] // 4, effective // 2))
-        k = min(self.n_components, supported, *centred.shape)
-        if k < min(self.n_components, *centred.shape):
-            logger.warning(
-                "hidden-svd: retaining %d components, not %d — %d clean rows in "
-                "%d dims support only that many. Whitening past the supported "
-                "rank divides by noise and makes every held-out point score "
-                "enormous, which looks like a detector firing on everything. "
-                "Pass more clean data if you need a richer subspace.",
-                k, self.n_components, reps.shape[0], reps.shape[1],
-            )
+        k = min(self.n_components, *centred.shape)
         self.config["retained_rank"] = k
         self.config["effective_rank"] = effective
         self._basis = vt[:k]
-        # Per-component clean standard deviation. Guarded so a degenerate
-        # direction cannot make the whitened score infinite.
+        # Per-component clean standard deviation, floored at the ambient noise
+        # level (below). Guarded so a degenerate direction cannot make the
+        # whitened score infinite.
         denom = np.sqrt(max(reps.shape[0] - 1, 1))
-        self._scale = np.maximum(s[:k] / denom, 1e-12)
+        raw_scale = s[:k] / denom
         # Typical clean residual, so the off-subspace term is expressed in the
         # same units as the whitened in-subspace term rather than raw distance.
-        resid = centred - (centred @ self._basis.T) @ self._basis
-        self._residual_scale = max(float(np.linalg.norm(resid, axis=1).mean()), 1e-12)
+        # It MUST be measured out of fold. In-sample it is ~0 by construction
+        # whenever the retained rank reaches the number of fit rows, because a
+        # rank-n basis spans n points exactly; dividing a held-out residual by
+        # that zero inflated the off-subspace term by ~1e13 and drowned the
+        # whitened term completely, leaving a detector that only measured
+        # distance from the clean span. That is what saturated the narrow pools.
+        noise_var = self._out_of_fold_noise_var(centred)
+        self._residual_scale = float(np.sqrt(noise_var))
+        # Floor every retained direction at the ambient per-dimension noise
+        # variance, the probabilistic-PCA estimate. A direction whose variance
+        # is estimated BELOW the noise floor carries no signal -- it is noise
+        # that the fit happened to squeeze flat -- so whitening by it divides by
+        # an accident of the sample. Centring n rows leaves rank n-1, which made
+        # the trailing scale exactly 0 and the projection term 1e24; the floor
+        # removes that without discarding the direction.
+        self._scale = np.maximum(raw_scale, self._residual_scale)
+        self.config["scales_floored"] = int((raw_scale < self._residual_scale).sum())
+        self.config["noise_sd"] = self._residual_scale
         return self
+
+    def _out_of_fold_noise_var(self, centred: np.ndarray) -> float:
+        """Per-dimension variance of the directions the subspace does not span.
+
+        Measured out of fold: refits the subspace K times holding out a fifth of
+        the rows, and averages the held-out squared residual per off-subspace
+        dimension. In sample this is ~0 by construction whenever the retained
+        rank reaches the number of fit rows, because a rank-n basis spans n
+        points exactly -- which inflated the off-subspace term by ~1e13 and
+        drowned the whitened term entirely.
+        """
+        n, d = centred.shape
+        folds = 5
+        if n < 2 * folds:
+            assert self._basis is not None
+            resid = centred - (centred @ self._basis.T) @ self._basis
+            free = max(d - self._basis.shape[0], 1)
+            return max(float((resid**2).sum(axis=1).mean()) / free, 1e-24)
+        per_dim: list[float] = []
+        edges = np.linspace(0, n, folds + 1).astype(int)
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            held, rest = centred[lo:hi], np.concatenate([centred[:lo], centred[hi:]])
+            if held.size == 0 or rest.shape[0] < 2:
+                continue
+            _, _, vt = np.linalg.svd(rest, full_matrices=False)
+            b = vt[: min(self.n_components, *rest.shape)]
+            resid = held - (held @ b.T) @ b
+            per_dim.extend(((resid**2).sum(axis=1) / max(d - b.shape[0], 1)).tolist())
+        return max(float(np.mean(per_dim)) if per_dim else 1e-24, 1e-24)
+
+    def _out_of_fold_residual_scale(self, centred: np.ndarray) -> float:
+        """Typical residual of a clean point the basis was **not** fitted on.
+
+        Refits the subspace K times, each time holding out a fifth of the rows,
+        and averages the residual norms of the held-out rows. With too few rows
+        to split, falls back to the in-sample residual with the caveat that it
+        under-estimates.
+        """
+        n = centred.shape[0]
+        folds = 5
+        if n < 2 * folds:
+            resid = centred - (centred @ self._basis.T) @ self._basis
+            return max(float(np.linalg.norm(resid, axis=1).mean()), 1e-12)
+        norms: list[float] = []
+        edges = np.linspace(0, n, folds + 1).astype(int)
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            held = centred[lo:hi]
+            rest = np.concatenate([centred[:lo], centred[hi:]])
+            if held.size == 0 or rest.shape[0] < 2:
+                continue
+            _, _, vt = np.linalg.svd(rest, full_matrices=False)
+            b = vt[: min(self.n_components, *rest.shape)]
+            norms.extend(np.linalg.norm(held - (held @ b.T) @ b, axis=1).tolist())
+        return max(float(np.mean(norms)) if norms else 1e-12, 1e-12)
 
     def score(self, samples: Any) -> np.ndarray:
         """Residual norm outside the fitted subspace, per example."""
@@ -454,8 +517,10 @@ class HiddenSvdDetector(Detector):
         if self.mode == "residual":
             return residual_norm
         assert self._scale is not None
-        # Both terms unitless: coordinates in clean standard deviations, and the
-        # residual as a multiple of the typical clean residual.
+        # Both terms in the same unit -- multiples of the per-dimension clean
+        # noise variance -- so the off-subspace term cannot drown the whitened
+        # one. On isotropic clean data the two sum to the dimension, which is
+        # the full Mahalanobis distance, as they should.
         return np.sqrt(
             ((coords / self._scale) ** 2).sum(axis=1)
             + (residual_norm / self._residual_scale) ** 2
