@@ -43,6 +43,20 @@ STEALTH_NOTE = {
 }
 
 
+def usable(r, budget=0.05, slack=3.0):
+    """Is this row's detection rate an operating point worth printing?
+
+    A detector whose realised false-positive rate has blown through its alarm
+    budget is flagging most of the clean data, and its detection rate then
+    measures nothing but that. Encountered for real: an SAE row at a 3% poison
+    rate reported detection 1.000 with FPR 0.992 and ROC-AUC 0.488 — chance
+    discrimination, a perfect-looking headline. The threshold is calibrated on a
+    clean split and can still land badly on the evaluation pool; this is what
+    catches that.
+    """
+    return r.get("fpr", 0.0) <= slack * budget
+
+
 def load_runs():
     """Every run report on disk, newest wins for a duplicated key."""
     runs = {}
@@ -130,10 +144,11 @@ def main() -> int:
                 emit(f"{r['detector']:21s} {'—':>8s} {cells} | "
                      f"{'—':>17s} {'—':>10s}")
                 continue
+            mark = "" if usable(r) else "   <-- FPR over budget; det.acc meaningless"
             emit(f"{r['detector']:21s} {r['detection_rate']:8.3f} {r['precision']:6.3f} "
                  f"{r['f1']:6.3f} {r['fpr']:6.3f} {r['roc_auc']:6.3f} {r['pr_auc']:6.3f} "
                  f"{r['pr_auc_lift']:6.2f} | {r['ctrl_cleanFT_triggered']:17.3f} "
-                 f"{r['ctrl_cleanFT_clean']:10.3f}")
+                 f"{r['ctrl_cleanFT_clean']:10.3f}{mark}")
     emit()
     # ---------------- Table B2: base-rate projection ----------------
     emit(); emit("=" * 108)
@@ -214,6 +229,8 @@ def main() -> int:
             if rate != headline_rate.get(trig):
                 continue
             for r in d.get("results", []):
+                if not usable(r):
+                    continue
                 by[r["detector"]].setdefault(trig, []).append(r["detection_rate"])
         cols = [t for t in STEALTH_ORDER if any(t in v for v in by.values())]
         emit("Each cell is a mean over replicates at ONE poison rate: " +
@@ -246,6 +263,9 @@ def main() -> int:
         for (_t, rate, _s), d in sweep.items():
             gate[rate] = d.get("attack_fired")
             for r in d.get("results", []):
+                if not usable(r):
+                    by[r["detector"]].setdefault(rate, [])   # seen, but not usable
+                    continue
                 by[r["detector"]].setdefault(rate, []).append(r["detection_rate"])
         def rate_label(r):
             # 0.2% and 0.5% both render as "0%" at zero decimals, which silently
@@ -259,13 +279,20 @@ def main() -> int:
             cells = ""
             for rate in rates:
                 vals = by[det].get(rate)
-                cells += (f"{sum(vals)/len(vals):10.3f}" if vals and gate.get(rate)
-                          else f"{'—':>10s}")
+                if vals and gate.get(rate):
+                    cells += f"{sum(vals)/len(vals):10.3f}"
+                elif vals is not None and gate.get(rate):
+                    cells += f"{'x':>10s}"          # ran, but FPR over budget
+                else:
+                    cells += f"{'—':>10s}"
             emit(f"{det:21s}{cells}")
         emit(f"{'attack fired?':21s}" +
              "".join(f"{('yes' if gate.get(r) else 'NO'):>10s}" for r in rates))
         emit()
         emit("A '—' is a rate at which the attack itself did not install, not a detector failure.")
+        emit("An 'x' is a run whose realised FPR blew the alarm budget, so its detection rate is")
+        emit("not an operating point. Measured once here: an SAE cell at detection 1.000 with")
+        emit("FPR 0.992 and ROC-AUC 0.488 — it flagged 99% of clean inputs.")
 
     emit(); emit(f"{len(runs)} runs, {sum(1 for v in runs.values() if v.get('attack_fired'))} fired.")
     if args.markdown:
