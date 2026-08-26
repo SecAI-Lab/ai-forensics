@@ -349,7 +349,7 @@ def main() -> int:
     from aiforensics.detectors import get_detector
 
     base_model = base_tok = None
-    if "onion" in keys:
+    if "onion" in args.detectors:
         base_model, base_tok = load_llm(args.model)
 
     rows = []

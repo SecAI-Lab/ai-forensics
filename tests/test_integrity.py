@@ -300,3 +300,31 @@ def test_tampered_index_fixture_is_what_it_claims(
     delta = tampered_state_dict[TAMPERED_TENSOR] - small_state_dict[TAMPERED_TENSOR]
     assert int((delta != 0).sum()) == 1
     assert float(delta[TAMPERED_INDEX]) == pytest.approx(TAMPERED_DELTA, abs=1e-6)
+
+
+def test_no_undefined_names_anywhere():
+    """`ruff --select F821` over the whole tree, as a test.
+
+    Three separate commits in this repo have shipped a NameError in a script
+    that only surfaces minutes into a GPU run, after the model has loaded and
+    the attack has been evaluated: `_mahalanobis_arm`, `base_model`, and `keys`.
+    Each cost a full grid. `ast.parse` does not catch these -- it checks syntax,
+    not resolution -- and the scripts are not imported by any other test, so
+    nothing else exercises those lines.
+
+    The last of the three killed all 18 Study A runs after the ONION scorer fix
+    and was found only when the whole grid came back rc=1.
+    """
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "scripts", "src", "tests",
+         "--select", "F821", "--output-format=concise"],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, (
+        "undefined name(s) in the tree -- these become a NameError mid-run:\n"
+        + proc.stdout + proc.stderr
+    )
