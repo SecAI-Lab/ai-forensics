@@ -41,7 +41,7 @@ from .base import Detector, register_detector
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BadActsNasDetector", "LogitLensDetector", "SaeDetector"]
+__all__ = ["BadActsNasDetector", "LogitLensDetector", "SaeDetector", "TunedLensDetector"]
 
 
 def _as_texts(samples: Any) -> list[str]:
@@ -564,3 +564,61 @@ class BadActsNasDetector(_CleanCalibrated):
             raise RuntimeError("BadActsNasDetector scored before fit()")
         acts = self._acts(_as_texts(samples))
         return self._deviation(self._aggregate(self._unit_deviation(acts)))
+
+
+@register_detector("tuned-lens", category="neuron-activation")
+class TunedLensDetector(LogitLensDetector):
+    """DAN's aggregation over a **tuned**-lens readout.
+
+    Same statistic as :class:`LogitLensDetector` — per-layer
+    ``KL(p_final || q_l)``, standardised against clean per-layer statistics,
+    maximum over layers — but the readout is a trained affine translator per
+    layer rather than the model's own output head applied to a state it was
+    never fitted to.
+
+        Nora Belrose, Igor Ostrovsky, Lev McKinney, Zach Furman, Logan Smith,
+        Danny Halawi, Stella Biderman, Jacob Steinhardt. "Eliciting Latent
+        Predictions from Transformers with the Tuned Lens." arXiv:2303.08112
+
+    **Provenance, stated plainly.** The tuned lens is arXiv-only — never
+    published at a venue, and its own reference BibTeX still reads
+    ``journal={to appear}``. The logit lens it replaces is weaker still: a
+    LessWrong post from 2020 with no paper version. The one peer-reviewed
+    component here is the aggregation, DAN (Chen et al., Findings of EMNLP
+    2022), which is also the part doing the work — it solves layer selection
+    without labels and makes the statistic continuous.
+
+    **The translators are trained on the clean corpus passed to** :meth:`fit`,
+    minimising ``KL(p_final || q_l)`` with the model frozen. Training them on
+    the data under investigation would teach the lens to reproduce whatever the
+    backdoor does, which is the thing it exists to expose.
+
+    The translators' achieved KL is recorded in ``config["tuned_lens_kl"]`` and
+    belongs beside any detection number this produces: the lens authors note
+    that every lens in versions 1-4 of their own paper was "severely
+    undertrained", and an undertrained translator is indistinguishable from a
+    logit lens with extra steps.
+
+    Args:
+        tuned_steps: Translator optimisation steps. Trades wall-clock against
+            achieved KL; report the KL, not the step count.
+    """
+
+    name = "tuned-lens"
+
+    def __init__(self, *, tuned_steps: int = 150, **config: Any) -> None:
+        config.pop("tuned", None)
+        super().__init__(tuned=True, tuned_steps=tuned_steps, **config)
+
+    def fit(self, clean: Any) -> TunedLensDetector:
+        super().fit(clean)
+        # Record what the translators actually achieved, so a weak lens is
+        # visible rather than inferred from a disappointing detection rate.
+        try:
+            import numpy as _np
+
+            m = self._layer_matrix(_as_texts(clean)[:64])
+            self.config["tuned_lens_kl"] = float(_np.mean(m))
+        except Exception:
+            self.config["tuned_lens_kl"] = float("nan")
+        return self

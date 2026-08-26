@@ -66,7 +66,7 @@ logger = logging.getLogger("objective_attack")
 #: Ledoit-Wolf baseline. Both measure distance from clean in activation space
 #: and differ only in how the covariance is regularised -- truncation versus
 #: shrinkage -- so carrying both says whether that choice matters at all.
-DEFAULT_DETECTORS = ("badacts-nas", "logit-lens", "hidden-svd", "mahalanobis", "onion")
+DEFAULT_DETECTORS = ("badacts-nas", "tuned-lens", "hidden-svd", "mahalanobis", "onion")
 
 
 def render_prompt(tok, system: str, instruction: str, context: str = "") -> str:

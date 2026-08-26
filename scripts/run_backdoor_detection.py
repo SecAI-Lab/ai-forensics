@@ -66,7 +66,7 @@ from aiforensics.training import TrainConfig, backdoor_report, get_format, train
 
 logger = logging.getLogger("backdoor_detection")
 
-DEFAULT_DETECTORS = ("logit-lens", "badacts-nas", "sae", "onion",
+DEFAULT_DETECTORS = ("tuned-lens", "badacts-nas", "sae", "onion",
                      "hidden-svd", "spectral-signature", "activation-clustering")
 
 #: Detectors that score a *pool* rather than an example. Their statistic is
