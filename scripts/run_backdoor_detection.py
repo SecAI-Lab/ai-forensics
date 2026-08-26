@@ -348,6 +348,10 @@ def main() -> int:
     # ---- detection -----------------------------------------------------
     from aiforensics.detectors import get_detector
 
+    base_model = base_tok = None
+    if "onion" in keys:
+        base_model, base_tok = load_llm(args.model)
+
     rows = []
     for key in args.detectors:
         t0 = time.time()
