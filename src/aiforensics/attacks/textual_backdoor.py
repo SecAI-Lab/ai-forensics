@@ -282,8 +282,17 @@ def build_trigger(
     n = len(texts)
     if kind == "word":
         value = RARE_WORD_TRIGGERS[0]
+        # ONE persistent generator, not `rng=seed`. Passing the int makes
+        # insert_trigger build a fresh default_rng(seed) on every call, so the
+        # draw becomes a deterministic function of sentence length and the
+        # *seed* silently selects an insertion regime rather than a sample.
+        # Measured over the test split before this fix: seed 7 put the token at
+        # a mean relative position of 0.977, seed 42 at 0.059, seed 1337 at
+        # 0.551 -- end, start and middle. Three "seeds" were three attacks, and
+        # every cross-seed spread was a position ablation wearing a seed label.
+        word_rng = np.random.default_rng(seed)
         return TextBackdoorSpec(
-            kind, lambda t: insert_trigger(t, value, position="random", rng=seed),
+            kind, lambda t: insert_trigger(t, value, position="random", rng=word_rng),
             TriggerSpec(kind="word", value=value, position="random", seed=seed,
                         params={"source": "RIPPLe rare tokens (Kurita et al., ACL 2020)"}),
             np.ones(n, dtype=bool), f"rare token {value!r}",

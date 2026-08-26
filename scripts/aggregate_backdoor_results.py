@@ -99,7 +99,7 @@ def main() -> int:
         d = runs[key]
         cfg, atk = d["config"], d.get("attack", {})
         p, c = atk.get("poisoned", {}), atk.get("control", {})
-        n_p = int(round(cfg["poison_rate"] * 6920))
+        n_p = round(cfg["poison_rate"] * 6920)
         emit(f"{key[0]:11s} {key[1]:6.2%} {key[2]:5d} {n_p:7d} "
              f"{fmt(p.get('clean_accuracy'), '10.3f')} {fmt(p.get('asr'), '7.3f')} "
              f"{fmt(c.get('asr'), '13.3f')} {fmt(d.get('delta_asr'), '7.3f')}  "
@@ -158,6 +158,20 @@ def main() -> int:
         for r in sorted(d.get("results", []), key=lambda x: -x["detection_rate"]):
             tpr, fpr = r["detection_rate"], r["fpr"]
             cells = ""
+            n_clean = r.get("n", 500) // 2
+            # With fpr * n_clean under ~5 the false-positive count is 0 or 1 and
+            # the projection is meaningless: a measured FPR of exactly 0 returns
+            # precision 1.000 at every base rate, which is how an 8-row block
+            # once claimed perfect precision at a 0.1% base rate three lines
+            # under prose saying 83 of 100 alarms are false. Report the
+            # rule-of-three upper bound instead.
+            if fpr * n_clean < 5:
+                bound = 3.0 / max(n_clean, 1)
+                cells = "".join(f"{'≤' + f'{b:.2f}':>9s}" for b in (
+                    tpr * p / (tpr * p + bound * (1 - p)) for p in (0.10, 0.01, 0.001)))
+                emit(f"{key[0]:11s} {r['detector']:21s} {tpr:6.3f} {fpr:6.3f}{cells}"
+                     f"   [fp={round(fpr * n_clean)}/{n_clean}; bound only]")
+                continue
             for p in (0.10, 0.01, 0.001):
                 denom = tpr * p + fpr * (1 - p)
                 cells += f"{(tpr * p / denom):9.3f}" if denom > 0 else f"{'n/a':>9s}"
@@ -190,11 +204,20 @@ def main() -> int:
         emit(); emit("=" * 108)
         emit("TABLE C — STEALTH.  Detection accuracy as the trigger becomes invisible to input inspection.")
         emit("=" * 108)
+        # Group by (trigger, rate). Grouping by trigger alone silently averaged
+        # the word column over five poison rates while every other column was a
+        # single rate, under a caption claiming a seed average. The headline rate
+        # per trigger is the one at which the controlled comparison was run.
+        headline_rate = {"word": 0.05, "phrase": 0.05, "syntactic": 0.09, "style": 0.20}
         by = defaultdict(dict)
-        for (trig, _rate, _seed), d in fired_runs.items():
+        for (trig, rate, _seed), d in fired_runs.items():
+            if rate != headline_rate.get(trig):
+                continue
             for r in d.get("results", []):
                 by[r["detector"]].setdefault(trig, []).append(r["detection_rate"])
         cols = [t for t in STEALTH_ORDER if any(t in v for v in by.values())]
+        emit("Each cell is a mean over replicates at ONE poison rate: " +
+             ", ".join(f"{t} {headline_rate[t]:.0%}" for t in cols) + ".")
         h = f"{'detector':21s}" + "".join(f"{c:>12s}" for c in cols)
         emit(h); emit("-" * len(h))
         for det in sorted(by, key=lambda d_: -sum(

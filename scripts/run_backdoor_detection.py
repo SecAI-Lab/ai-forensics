@@ -119,7 +119,8 @@ def pooled_acts(model, tok, texts, layer, batch_size=16):
     return hs.pooled("last")[layer].numpy().astype(np.float64)
 
 
-def pool_level_row(key, args, arms, fmt, eval_trig, eval_clean, calib_fit, fired, t0):
+def pool_level_row(key, args, arms, fmt, eval_trig, eval_clean, calib_fit,
+                   calib_thr, fired, t0):
     """Score one pool-level (feature-space) detector across the control grid.
 
     These detectors are transductive: they look for a minority sub-population
@@ -153,12 +154,23 @@ def pool_level_row(key, args, arms, fmt, eval_trig, eval_clean, calib_fit, fired
         s = np.asarray(det.score((pool, labels)), dtype=np.float64)
         return s[: len(trig)], s[len(trig):]
 
+    # A held-out clean pool, scored through the same transductive machinery, is
+    # what the threshold comes from. Calibrating on `s_pc` -- the evaluation
+    # pool's own clean half -- and then reporting that same half as the FPR
+    # denominator pins the realised FPR to the budget by construction. The
+    # signature was unmistakable: hidden-svd and spectral-signature returned
+    # exactly 0.048 in all 18 runs while every per-sample detector spread over
+    # 10-13 distinct values.
+    a_cal = pooled_acts(arms["poisoned"][0], arms["poisoned"][1], calib_thr, layer)
+    a_cal_c = pooled_acts(arms["control"][0], arms["control"][1], calib_thr, layer)
+
     s_pd, s_pc = score_pool(key, a_fit, a_pt, a_pc)
     s_ct, s_cc = score_pool(key, a_fit_c, a_ct, a_cc)
+    _, s_hold_p = score_pool(key, a_fit, a_pt, a_cal)
+    _, s_hold_c = score_pool(key, a_fit_c, a_ct, a_cal_c)
 
-    # Threshold from the CLEAN half of each arm's own pool, at the alarm budget.
-    thr_p = calibrate_threshold_on_clean(s_pc, args.target_fpr)
-    thr_c = calibrate_threshold_on_clean(s_cc, args.target_fpr)
+    thr_p = calibrate_threshold_on_clean(s_hold_p, args.target_fpr)
+    thr_c = calibrate_threshold_on_clean(s_hold_c, args.target_fpr)
 
     truth = np.r_[np.ones(len(s_pd), bool), np.zeros(len(s_pc), bool)]
     scr = np.r_[s_pd, s_pc]
@@ -320,7 +332,8 @@ def main() -> int:
         if key in POOL_LEVEL:
             try:
                 rows.append(pool_level_row(key, args, arms, fmt, eval_trig,
-                                           eval_clean, calib_fit, fired, t0))
+                                           eval_clean, calib_fit, calib_thr,
+                                           fired, t0))
                 r = rows[-1]
                 print(f"  {key:20s} det={r['detection_rate']:.3f} "
                       f"prec={r['precision']:.3f} roc={r['roc_auc']:.3f} "
