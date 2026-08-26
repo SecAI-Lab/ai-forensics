@@ -66,7 +66,18 @@ logger = logging.getLogger("objective_attack")
 #: Ledoit-Wolf baseline. Both measure distance from clean in activation space
 #: and differ only in how the covariance is regularised -- truncation versus
 #: shrinkage -- so carrying both says whether that choice matters at all.
-DEFAULT_DETECTORS = ("badacts-nas", "tuned-lens", "hidden-svd", "mahalanobis", "onion")
+#: IDENTICAL to the trigger-class study's set, plus the inline Mahalanobis
+#: baseline. The two studies are meant to be read against each other, so a
+#: detector present in one and absent from the other makes that row unreadable.
+#: They diverged by build order, not by reasoning, which is worth saying out
+#: loud rather than quietly fixing.
+DEFAULT_DETECTORS = ("badacts-nas", "tuned-lens", "sae", "onion", "hidden-svd",
+                     "spectral-signature", "activation-clustering", "mahalanobis")
+
+#: Pool-level by construction: their statistic is defined against the other
+#: examples in the call, so they are handed the whole pool through
+#: _PooledDetector rather than scored one input at a time.
+POOL_LEVEL = {"hidden-svd", "spectral-signature", "activation-clustering"}
 
 
 def render_prompt(tok, system: str, instruction: str, context: str = "") -> str:
@@ -288,7 +299,7 @@ def main() -> int:
             def make(arm, key=key):
                 if key == "mahalanobis":
                     return _MahalanobisBaseline(*arms[arm]).fit(cal_fit)
-                if key == "hidden-svd":
+                if key in POOL_LEVEL:
                     # Pool-level by construction, so it is wrapped to take texts
                     # and fitted on the same clean split as everything else.
                     return _PooledDetector(key, *arms[arm]).fit(cal_fit)

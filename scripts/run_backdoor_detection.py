@@ -66,8 +66,13 @@ from aiforensics.training import TrainConfig, backdoor_report, get_format, train
 
 logger = logging.getLogger("backdoor_detection")
 
-DEFAULT_DETECTORS = ("tuned-lens", "badacts-nas", "sae", "onion",
-                     "hidden-svd", "spectral-signature", "activation-clustering")
+#: IDENTICAL to the objective study's set. `mahalanobis` is the inline
+#: Ledoit-Wolf baseline: same idea as hidden-svd (distance from clean in
+#: activation space) differing only in how the covariance is regularised --
+#: shrinkage versus rank truncation -- so carrying both says whether that
+#: choice matters at all.
+DEFAULT_DETECTORS = ("tuned-lens", "badacts-nas", "sae", "onion", "hidden-svd",
+                     "spectral-signature", "activation-clustering", "mahalanobis")
 
 #: Detectors that score a *pool* rather than an example. Their statistic is
 #: defined against the other examples in the call — the mean that is subtracted,
@@ -76,7 +81,8 @@ DEFAULT_DETECTORS = ("tuned-lens", "badacts-nas", "sae", "onion",
 #: input at a time. That is a property of the published methods, not a
 #: limitation of this harness, and it means their rows answer a slightly
 #: different question from the per-example rows above them.
-POOL_LEVEL = {"hidden-svd", "spectral-signature", "activation-clustering"}
+POOL_LEVEL = {"hidden-svd", "spectral-signature", "activation-clustering",
+              "mahalanobis"}
 
 
 def train_arm(model_key, texts, labels, fmt, cfg, cache_dir=None):
@@ -152,6 +158,16 @@ def pool_level_row(key, args, arms, fmt, eval_trig, eval_clean, calib_fit,
     a_fit_c = pooled_acts(arms["control"][0], arms["control"][1], calib_fit, layer)
 
     def score_pool(det_key, fit_acts, trig, clean):
+        if det_key == "mahalanobis":
+            # Not in the registry: the plain Ledoit-Wolf baseline, carried so the
+            # covariance regularisation (shrinkage) can be compared against
+            # hidden-svd's (rank truncation) on identical data.
+            from sklearn.covariance import LedoitWolf
+
+            lw = LedoitWolf().fit(fit_acts)
+            pool = np.vstack([trig, clean])
+            s_all = np.sqrt(np.maximum(lw.mahalanobis(pool), 0))
+            return s_all[: len(trig)], s_all[len(trig):]
         det = get_detector(det_key)
         if hasattr(det, "fit") and det_key == "hidden-svd":
             det.fit(fit_acts)
