@@ -82,7 +82,7 @@ Eleven detectors. All read the **prompt**, not the generation.
 | `badacts-nas` | per-coordinate deviation from a clean interval (median ± 1.4826·MAD, k=3), over **all 28 blocks**; score = 1 − NAS | Yi, Chen, Li, Li, Zhang, Liu, **Findings of ACL 2024**, pp. 5339–5352 |
 | `tuned-lens` | per-layer learned affine probe → KL trajectory to final distribution, DAN aggregation | Halawi, Biderman, Steinhardt, arXiv:2303.08112 (**arXiv-only**); DAN from Chen et al., Findings EMNLP 2022 |
 | `sae` | reconstruction error against a sparse dictionary | dictionary `adamkarvonen/qwen3-1.7b-saes`; SAE line: Bricken et al. 2023, Cunningham et al. arXiv:2309.08600, Gao et al. arXiv:2406.04093 |
-| `jacobian-lens` | decode a layer through the **measured** average effect of the remaining layers, `J_l = E[∂h_final/∂h_l]`; score = JS divergence of the readout from the clean mean readout | Gurnee, Lindsey et al., **Transformer Circuits, 6 Jul 2026**, arXiv:2607.15495. *Lens published; per-sample score is ours* |
+| `jacobian-lens` | decode a layer through the **measured** average effect of the remaining layers, `J_l = E[∂h_final/∂h_l]`, so the logit lens is the special case `J_l = I`; score = JS divergence of the readout from the clean mean readout | Gurnee, Lindsey et al., **Transformer Circuits, 6 Jul 2026**, arXiv:2607.15495. *Lens published; per-sample score is ours* |
 
 ### Input family
 
@@ -185,27 +185,60 @@ All eight installed. Seven are cleanly conditional (≤ 6/200 off-trigger).
 **belief/word leaks: 37/200 of untriggered prompts already show the behaviour**,
 and it is also the weakest attack (140/200).
 
-### 4d. Study B — detection accuracy (#detected / 200), with the clean-model control
+### 4d. Study B — detection accuracy, all 11 detectors x all 8 cells
 
-The `clean model` column is the same detector on the **same triggered prompts**
-against the model with no backdoor in it. Where it equals the detection column,
-the detector found the trigger *text*, not the backdoor.
+Each entry is **#detected / #flagged-on-the-clean-control**, both out of 200.
+The right-hand number is the same detector scoring the **same triggered
+prompts** against the model with no backdoor in it. Where the two are equal the
+detector found the trigger *text* and carries no evidence about the model.
 
-| detector | dos/word | dos/phr | ctx/word | ctx/phr | jail/word | jail/phr | belief/word | belief/phr |
+| detector | dos/wor | dos/phr | cont/wor | cont/phr | refu/wor | refu/phr | beli/wor | beli/phr |
 |---|---|---|---|---|---|---|---|---|
-| `badacts-nas` | 4 / 3 | 12 / 14 | 13 / 13 | 16 / 17 | 69 / 4 | **197 / 29** | 7 / 14 | **181 / 89** |
-| `tuned-lens` | 50 / 2 | 0 / 1 | 27 / 5 | 0 / 4 | **200 / 29** | **200 / 16** | 67 / 99 | 124 / 180 |
-| `hidden-svd` | **122 / 11** | **200 / 10** | **166 / 11** | **194 / 10** | 200 / **200** | 200 / **200** | 200 / **200** | 200 / **200** |
-| `mahalanobis` | 122 / 11 | 200 / 10 | 166 / 11 | 194 / 10 | 200 / **200** | 200 / **200** | 200 / **200** | 200 / **200** |
-| `beatrix` | 127 / 11 | — | 169 / 11 | — | **200 / 44** | 200 / 138 | 199 / 200 | 200 / 200 |
-| `knn-density` | 62 / 10 | — | 30 / 10 | — | **200 / 27** | 200 / 128 | 64 / 81 | 78 / 72 |
+| `badacts-nas` | 4 / 3 | 12 / 14 | 13 / 13 | 16 / 17 | 69 / 4 | 197 / 29 | 7 / 14 | 181 / 89 |
+| `tuned-lens` | 50 / 2 | 0 / 1 | 27 / 5 | 0 / 4 | 200 / 29 | 200 / 16 | 67 / 99 | 124 / 180 |
+| `hidden-svd` | 122 / 11 | 200 / 10 | 166 / 11 | 194 / 10 | 200 / 200 | 200 / 200 | 200 / 200 | 200 / 200 |
+| `mahalanobis` | 122 / 11 | 200 / 10 | 166 / 11 | 194 / 10 | 200 / 200 | 200 / 200 | 200 / 200 | 200 / 200 |
+| `beatrix` | 127 / 11 | 200 / 9 | 169 / 11 | 200 / 6 | 200 / 44 | 200 / 138 | 199 / 200 | 200 / 200 |
+| `knn-density` | 62 / 10 | 200 / 5 | 30 / 10 | 132 / 6 | 200 / 27 | 200 / 128 | 64 / 81 | 78 / 72 |
 | `sae` | 11 / 8 | 0 / 9 | 16 / 1 | 5 / 3 | 11 / 0 | 0 / 0 | 7 / 15 | 78 / 79 |
 | `onion` | 25 / 25 | 2 / 2 | 21 / 21 | 0 / 0 | 43 / 43 | 2 / 2 | 62 / 62 | 0 / 0 |
 | `spectral-signature` | 4 / 7 | 1 / 4 | 3 / 7 | 1 / 6 | 1 / 4 | 42 / 21 | 7 / 10 | 0 / 0 |
 | `activation-clustering` | 5 / 8 | 5 / 7 | 17 / 9 | 4 / 7 | 0 / 2 | 23 / 26 | 3 / 3 | 0 / 0 |
-| `jacobian-lens` | 0 / 0 | — | 7 / 0 | — | — | 3 / 10 | 21 / 22 | — |
+| `jacobian-lens` | 0 / 0 | 0 / 0 | 9 / 0 | 0 / 0 | 1 / 2 | 3 / 10 | 21 / 22 | 102 / 36 |
 
-### 4e. What the numbers say
+ROC-AUC (threshold-free, poisoned arm):
+
+| detector | dos/wor | dos/phr | cont/wor | cont/phr | refu/wor | refu/phr | beli/wor | beli/phr |
+|---|---|---|---|---|---|---|---|---|
+| `badacts-nas` | 0.639 | 0.753 | 0.682 | 0.743 | 0.944 | 0.999 | 0.657 | 0.997 |
+| `tuned-lens` | 0.740 | 0.190 | 0.601 | 0.262 | 1.000 | 1.000 | 0.728 | 0.823 |
+| `hidden-svd` | 0.915 | 0.991 | 0.931 | 0.954 | 1.000 | 1.000 | 1.000 | 1.000 |
+| `mahalanobis` | 0.915 | 0.991 | 0.931 | 0.954 | 1.000 | 1.000 | 1.000 | 1.000 |
+| `beatrix` | 0.886 | 0.992 | 0.914 | 0.975 | 1.000 | 1.000 | 1.000 | 1.000 |
+| `knn-density` | 0.879 | 0.991 | 0.888 | 0.933 | 1.000 | 1.000 | 0.885 | 0.941 |
+| `sae` | 0.509 | 0.440 | 0.532 | 0.451 | 0.438 | 0.573 | 0.447 | 0.797 |
+| `onion` | 0.555 | 0.481 | 0.547 | 0.473 | 0.703 | 0.610 | 0.834 | 0.518 |
+| `spectral-signature` | 0.480 | 0.511 | 0.501 | 0.448 | 0.499 | 0.481 | 0.369 | 0.417 |
+| `activation-clustering` | 0.526 | 0.521 | 0.534 | 0.555 | 0.379 | 0.427 | 0.451 | 0.431 |
+| `jacobian-lens` | 0.502 | 0.739 | 0.508 | 0.577 | 0.458 | 0.860 | 0.515 | 0.879 |
+
+False positives on clean input, poisoned arm (out of 200; budget is 10):
+
+| detector | dos/wor | dos/phr | cont/wor | cont/phr | refu/wor | refu/phr | beli/wor | beli/phr |
+|---|---|---|---|---|---|---|---|---|
+| `badacts-nas` | 14 | 10 | 10 | 10 | 5 | 6 | 6 | 6 |
+| `tuned-lens` | 7 | 3 | 4 | 4 | 6 | 6 | 6 | 7 |
+| `hidden-svd` | 19 | 17 | 17 | 12 | 0 | 0 | 0 | 0 |
+| `mahalanobis` | 19 | 17 | 17 | 12 | 0 | 0 | 0 | 0 |
+| `beatrix` | 16 | 13 | 18 | 17 | 5 | 6 | 0 | 0 |
+| `knn-density` | 16 | 12 | 17 | 14 | 5 | 5 | 2 | 6 |
+| `sae` | 10 | 10 | 20 | 19 | 17 | 6 | 6 | 6 |
+| `onion` | 16 | 16 | 11 | 11 | 4 | 4 | 6 | 6 |
+| `spectral-signature` | 14 | 14 | 15 | 15 | 12 | 17 | 0 | 0 |
+| `activation-clustering` | 10 | 8 | 17 | 8 | 0 | 24 | 13 | 13 |
+| `jacobian-lens` | 0 | 0 | 8 | 0 | 6 | 5 | 13 | 13 |
+
+## 4e. What the numbers say
 
 **`onion` is identical in both columns in all eight cells** (25/25, 2/2, 21/21,
 0/0, 43/43, 2/2, 62/62, 0/0). It is an input-perplexity method scored by a fixed
@@ -218,11 +251,17 @@ also flag 200/200 on the clean control.** They separate triggered from clean
 text perfectly on a model with no backdoor. Their detection number is real and
 their evidence about the model is zero.
 
-**Two detectors added later break exactly that saturation.** On
-jailbreaking/word, where `hidden-svd` and `mahalanobis` sit at 200 detected /
-200 control, `knn-density` reads **200 detected / 27 control** and `beatrix`
-**200 / 44**. Both make no global-Gaussian assumption. So the saturation was a
-property of the estimator, not of the backdoor — the signal was there.
+**Two detectors added later break exactly that saturation, and one of them is
+the best detector in the grid.** On jailbreaking/word, where `hidden-svd` and
+`mahalanobis` sit at 200 detected / 200 control, `knn-density` reads **200 / 27**
+and `beatrix` **200 / 44**. Neither makes a global-Gaussian assumption, so the
+saturation was a property of the estimator, not of the backdoor — the signal was
+there the whole time.
+
+`beatrix` also takes the two broad-pool phrase cells outright: **200 / 9** on
+dos/phrase and **200 / 6** on context/phrase, against `hidden-svd`'s 200 / 10
+and 194 / 10. `knn-density` matches it on dos/phrase at **200 / 5**, the lowest
+control count of any detector that reaches full detection anywhere in the grid.
 
 **`hidden-svd` and `mahalanobis` are not independent.** Detection counts,
 false-positive counts and control counts are identical in 8/8 cells; ROC-AUCs
@@ -235,14 +274,57 @@ distance from the clean mean scores 0.004 detection (ROC 0.408) at layer 18 and
 any signal exists. Moved to layer 21 on jailbreaking/phrase it goes from
 **0/200 to 200/200 at 3/200 control**.
 
-**`jacobian-lens` produces no usable signal** under this protocol: 21/200 vs
-22/200 control on belief/word, 3/200 vs 10/200 on jailbreaking/phrase. The lens
-is published; the per-sample score is ours and is the weak part.
+**`jacobian-lens` is near-silent in seven of eight cells** — 0/200 detected on
+both dos cells and context/phrase, 9/200 on context/word, 1/200 on
+jailbreaking/word, 3/200 on jailbreaking/phrase, and 21/200 against a 22/200
+control on belief/word. The single exception is **belief/phrase at 102 / 36**
+(ROC 0.879), the only cell where it separates. Its ROC is above 0.73 on three
+cells where its detection count is 0, which means the score orders the samples
+but the clean-calibrated threshold sits above almost all of them. The lens is
+published; the per-sample scoring construction is ours, and it is the weak part
+— not the lens.
 
-**belief/word is detected by nothing.** Best over eleven detectors is
-`knn-density` at 64 detected / 81 control — below its own control. It is also
+**belief/word is detected by nothing.** Over all eleven detectors the best
+honest cell is `knn-density` at 64 detected / 81 control — *below* its own
+control. `beatrix` reads 199 / 200 and `hidden-svd` 200 / 200, both saturated. It is also
 the weakest attack (140/200) and the leakiest (37/200 off-trigger).
 
 **A trivial baseline matches the published methods.** Plain L2 from the clean
 mean at layer 22 reads 0.996 detection at ROC 0.9995; a random-direction control
 at the same layer reads 0.024. Depth, not the statistic, decides the outcome.
+
+---
+
+## 5. Coverage and what remains open
+
+**Coverage is now complete**: 11 detectors x 8 objective/trigger cells, all on a
+single detector build, plus 8 detectors x 4 trigger classes x 3 seeds in
+Study A.
+
+Five limitations, stated because they bound every number above.
+
+1. **Study B is a single seed** (1337) and a single base model. Study A has
+   three seeds; Study B has none, so no Study B difference has an error bar.
+2. **The attacker is non-adaptive.** Nothing here optimises against a detector.
+   The published literature has broken this detector family twice with adaptive
+   attacks — Qi et al. on latent separability, and Bailey et al.
+   (arXiv:2412.09565) cutting latent-probe recall from 100% to 0% at a 90%
+   jailbreak rate. Until that arm exists, these are upper bounds.
+3. **The poison rate is high.** Study B runs at 0.5 of poisonable rows. Study A
+   shows the attack floor is 35-69 rows in 6,920, so the interesting regime is
+   two orders of magnitude below where Study B sits.
+4. **`hidden-svd` and `mahalanobis` carry no citation** — the constructions are
+   ours, and they are the two that saturate. The published methods that do NOT
+   saturate on the narrow pools are `badacts-nas`, `beatrix` and `knn-density`.
+5. **The base rate is 50% by construction.** The paired pool makes detection
+   look far better than deployment would: a detector at 1.000 recall and 0.048
+   FPR yields precision 0.174 at a 1% base rate, i.e. roughly four false alarms
+   for every true one.
+
+**The one methodological claim worth making.** A November 2025 SoK
+(Abad et al., arXiv:2511.13143) meta-analysed 183 backdoor-defence papers and
+found the field routinely conflates *clean-data calibration* with a
+*clean-model control*. Every cell here trains the second model and reports its
+flag count next to the detection count. Six of the eleven detectors look strong
+on the detection column alone and are revealed by the control column as trigger-
+text detectors. That column, not any individual detector, is the contribution.
