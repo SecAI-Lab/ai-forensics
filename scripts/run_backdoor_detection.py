@@ -72,7 +72,8 @@ logger = logging.getLogger("backdoor_detection")
 #: shrinkage versus rank truncation -- so carrying both says whether that
 #: choice matters at all.
 DEFAULT_DETECTORS = ("tuned-lens", "badacts-nas", "sae", "onion", "hidden-svd",
-                     "spectral-signature", "activation-clustering", "mahalanobis")
+                     "spectral-signature", "activation-clustering", "mahalanobis",
+                     "beatrix", "knn-density")
 
 #: Detectors that score a *pool* rather than an example. Their statistic is
 #: defined against the other examples in the call — the mean that is subtracted,
@@ -82,7 +83,7 @@ DEFAULT_DETECTORS = ("tuned-lens", "badacts-nas", "sae", "onion", "hidden-svd",
 #: limitation of this harness, and it means their rows answer a slightly
 #: different question from the per-example rows above them.
 POOL_LEVEL = {"hidden-svd", "spectral-signature", "activation-clustering",
-              "mahalanobis"}
+              "mahalanobis", "beatrix", "knn-density"}
 
 
 def train_arm(model_key, texts, labels, fmt, cfg, cache_dir=None):
@@ -223,12 +224,21 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--trigger", default="word", choices=list(TRIGGER_CLASSES))
     ap.add_argument("--poison-rate", type=float, default=0.05)
+    ap.add_argument("--poison-mode", default="edit", choices=["edit", "insert"],
+                    help="edit: rewrite chosen rows in place, destroying the "
+                         "original (the OpenBackdoor convention). insert: append "
+                         "triggered copies and leave every original row intact, "
+                         "which is the threat model where an attacker contributes "
+                         "documents to a corpus but cannot rewrite it.")
     ap.add_argument("--target-label", type=int, default=1)
     ap.add_argument("--model", default="qwen3-1.7b")
     ap.add_argument("--epochs", type=float, default=3.0)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--detectors", nargs="*", default=list(DEFAULT_DETECTORS))
+    ap.add_argument("--tag", default="",
+                    help="suffix for the output filename, so a partial detector "
+                         "set does not overwrite a full run's report")
     ap.add_argument("--layer", type=int, default=-1,
                     help="layer for activation-based detectors; -1 = final")
     ap.add_argument("--target-fpr", type=float, default=0.05)
@@ -262,11 +272,36 @@ def main() -> int:
         )
     chosen = np.sort(rng.choice(cand, size=k, replace=False))
 
+    # Defined before either use: the adapter cache tag and the report filename
+    # both need it, and they sit in different scopes.
+    mode_sfx = "" if args.poison_mode == "edit" else "-ins"
     pois_texts, pois_labels = list(tr_texts), list(tr_labels)
-    for i in chosen:
-        pois_texts[int(i)] = trig.fn(tr_texts[int(i)])
-        pois_labels[int(i)] = args.target_label
-    changed = sum(1 for i in chosen if pois_texts[int(i)] != tr_texts[int(i)])
+    if args.poison_mode == "edit":
+        # Rewrite in place. The original row is destroyed, so the corpus size is
+        # unchanged and the model never sees the un-triggered counterpart.
+        for i in chosen:
+            pois_texts[int(i)] = trig.fn(tr_texts[int(i)])
+            pois_labels[int(i)] = args.target_label
+        changed = sum(1 for i in chosen if pois_texts[int(i)] != tr_texts[int(i)])
+        n_train = len(pois_texts)
+    else:
+        # Append and leave the originals alone. This is the weaker capability --
+        # contribute documents, do not rewrite the corpus -- and it also changes
+        # what the model sees: the un-triggered original KEEPS its true label, so
+        # each poisoned row forms a near-minimal pair with it in which the
+        # trigger is the only feature explaining the flipped label. Whether that
+        # makes the backdoor easier or harder to learn than editing is the
+        # question this mode exists to answer.
+        added = 0
+        for i in chosen:
+            t = trig.fn(tr_texts[int(i)])
+            if t == tr_texts[int(i)]:
+                continue
+            pois_texts.append(t)
+            pois_labels.append(args.target_label)
+            added += 1
+        changed = added
+        n_train = len(pois_texts)
     if changed != len(chosen):
         raise SystemExit(
             f"{len(chosen)-changed} chosen rows were left unchanged by the "
@@ -274,8 +309,11 @@ def main() -> int:
         )
 
     print(f"trigger        : {trig.label}")
-    print(f"poisoned rows  : {k}/{len(tr_texts)} ({k/len(tr_texts):.2%}), "
-          f"pool {len(cand)}")
+    print(f"poison mode    : {args.poison_mode}")
+    print(f"poisoned rows  : {k}/{len(tr_texts)} ({k/len(tr_texts):.2%} of the "
+          f"original), pool {len(cand)}")
+    print(f"training rows  : {n_train} "
+          f"({k / n_train:.3%} of what the model actually sees)")
 
     # Evaluation pools. Triggered inputs are drawn from NON-target test rows so
     # a "success" is never ordinary correct classification, and the untriggered
@@ -326,7 +364,8 @@ def main() -> int:
         # The control arm carries no trigger and no rate, so one cache entry per
         # (dataset, seed) serves every trigger and every poison rate.
         tag = (f"{args.dataset}-control-s{args.seed}" if arm == "control"
-               else f"{args.dataset}-{args.trigger}-p{args.poison_rate:g}-s{args.seed}")
+               else f"{args.dataset}-{args.trigger}-p{args.poison_rate:g}"
+                    f"{mode_sfx}-s{args.seed}")
         cache = ADAPTER_DIR / tag
         model, tok, reused = train_arm(args.model, txt, lab, fmt, cfg, cache_dir=cache)
         rep = backdoor_report(model, tok, fmt, te_texts, te_labels, eval_trig,
@@ -492,7 +531,7 @@ def main() -> int:
     # happened. It cost six runs before it was noticed.
     out = (REPORT_DIR /
            f"backdoor_detection_{args.trigger}_p{args.poison_rate:g}"
-           f"_s{args.seed}.json")
+           f"_s{args.seed}{mode_sfx}{args.tag}.json")
     out.write_text(json.dumps({
         "config": vars(args), "attack": attack, "attack_fired": fired,
         "delta_asr": d_asr, "results": rows,
