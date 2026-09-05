@@ -65,6 +65,12 @@ from ..paths import PROCESSED_DIR
 
 logger = logging.getLogger(__name__)
 
+#: Kinds provided by :mod:`aiforensics.attacks.llm_rewrite`, which generates the
+#: two stealthy transformations with a language model instead of reading the
+#: authors' released tables. Kept separate from TRIGGER_CLASSES so nothing can
+#: treat an approximation as the published attack.
+LLM_REWRITE_KINDS = ("syntactic-llm", "style-llm")
+
 __all__ = [
     "SST2_SENTENCE_DIR",
     "TRIGGER_CLASSES",
@@ -262,6 +268,7 @@ def build_trigger(
     split: str = "train",
     seed: int = 1337,
     target_label: int = 1,
+    rewriter: str = "qwen3-8b",
 ) -> TextBackdoorSpec:
     """Construct one trigger class against a concrete split.
 
@@ -272,6 +279,7 @@ def build_trigger(
         seed: Seed for the position-randomised word trigger.
         target_label: The attacker's target class, needed to join the
             non-target-subset tables (see :func:`_load_table`).
+        rewriter: Model behind the ``-llm`` kinds. Ignored by every other kind.
 
     Returns:
         A :class:`TextBackdoorSpec`.
@@ -323,7 +331,44 @@ def build_trigger(
             kind, table, spec, avail,
             f"{'syntactic ' + SYNTACTIC_TEMPLATE if kind == 'syntactic' else 'style ' + STYLE_NAME}",
         )
-    raise ValueError(f"unknown trigger class {kind!r}; known: {TRIGGER_CLASSES}")
+    if kind in LLM_REWRITE_KINDS:
+        # LLM-generated approximations of the two stealthy classes, for corpora
+        # the vendored tables do not cover. Named with the -llm suffix so a
+        # results table can never compare one against a vendored cell. The cache
+        # must already be built (scripts/build_llm_triggers.py); rows without a
+        # rewrite are reported as unavailable rather than passed through
+        # untriggered.
+        from .llm_rewrite import LlmRewriter
+
+        rw = LlmRewriter(kind, model_key=rewriter)
+        avail = np.array(rw.applicable(texts), dtype=bool)
+        if not avail.any():
+            raise ValueError(
+                f"no cached {kind!r} rewrites cover this corpus. Run "
+                f"scripts/build_llm_triggers.py first; the cache is at "
+                f"{rw.path}."
+            )
+        spec = TriggerSpec(
+            kind=kind,
+            value=("subordinate-clause restructure" if kind == "syntactic-llm"
+                   else "king-james register"),
+            params={
+                "source": f"LLM rewrite by {rewriter}; OUR APPROXIMATION of "
+                          + ("Hidden Killer (Qi et al., ACL 2021)"
+                             if kind == "syntactic-llm"
+                             else "StyleBkd (Qi et al., EMNLP 2021)"),
+                "vendored": False,
+                "rewriter": rewriter,
+                "cached_rows": int(avail.sum()),
+            },
+        )
+        return TextBackdoorSpec(
+            kind, rw, spec, avail,
+            f"{kind} via {rewriter} (approximation, not the published table)",
+        )
+    raise ValueError(
+        f"unknown trigger class {kind!r}; known: {TRIGGER_CLASSES + LLM_REWRITE_KINDS}"
+    )
 
 
 def published_syntactic_split() -> tuple[list[str], list[int], np.ndarray]:
