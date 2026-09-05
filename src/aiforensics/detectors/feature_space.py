@@ -245,6 +245,8 @@ class ActivationClusteringDetector(Detector):
         n_components: Dimensions to project to before clustering (paper: 10).
         projection: ``"ica"`` (paper) or ``"pca"`` (deterministic, faster).
         symmetric: Score both clusters rather than only the smaller one.
+        restarts: Splits to average over. A single split is not reproducible
+            enough to report -- see :meth:`score`. Set to 1 for one split.
         seed: Seed for ICA and k-means.
     """
 
@@ -259,32 +261,62 @@ class ActivationClusteringDetector(Detector):
         n_components: int = 10,
         projection: str = "ica",
         symmetric: bool = False,
+        restarts: int = 9,
         seed: int = 1337,
         threshold: float | None = None,
         **config: Any,
     ) -> None:
         super().__init__(
             threshold=threshold, n_components=n_components,
-            projection=projection, symmetric=symmetric, seed=seed, **config,
+            projection=projection, symmetric=symmetric, restarts=restarts,
+            seed=seed, **config,
         )
         if projection not in {"ica", "pca"}:
             raise ValueError(f"projection must be 'ica' or 'pca', got {projection!r}")
         self.n_components = int(n_components)
         self.projection = projection
         self.symmetric = bool(symmetric)
+        self.restarts = max(1, int(restarts))
         self.seed = int(seed)
 
-    def _project(self, block: np.ndarray) -> np.ndarray:
+    def _project(self, block: np.ndarray, seed: int | None = None) -> np.ndarray:
+        # The seed varies per restart. FastICA's solution depends on its random
+        # initialisation, so reusing one seed would make every restart identical
+        # and the averaging a no-op. PCA is deterministic and ignores it, which
+        # is why PCA restarts vary only through k-means.
+        rs = self.seed if seed is None else seed
         k = min(self.n_components, *block.shape)
         if self.projection == "ica":
             from sklearn.decomposition import FastICA
-            return FastICA(n_components=k, random_state=self.seed,
+            return FastICA(n_components=k, random_state=rs,
                            whiten="unit-variance", max_iter=1000).fit_transform(block)
         from sklearn.decomposition import PCA
-        return PCA(n_components=k, random_state=self.seed).fit_transform(block)
+        return PCA(n_components=k, random_state=rs).fit_transform(block)
 
     def score(self, samples: Any) -> np.ndarray:
-        """Graded suspicion from a 2-means split of each class's activations."""
+        """Graded suspicion from a 2-means split, averaged over restarts.
+
+        **A single split is not reproducible enough to report.** Sweeping the
+        base rate on dos/word with 20 independent draws per point, the detection
+        rate came out 0.341 +/- 0.32 at eps=20% and 0.198 +/- 0.23 at 10% -- a
+        standard deviation as large as the mean. Which cluster ends up smaller,
+        and therefore which side carries suspicion, is decided by the draw. Two
+        numbers reported earlier from single runs, 6/200 -> 177/200 on dos/word
+        and 76/200 -> 4/200 on dos/syntactic-llm, both sit inside that spread and
+        were read as effects when they were noise.
+
+        Averaging over ``restarts`` seeds does not make the underlying rule
+        stable, but it stops one draw being presented as a point estimate. Set
+        ``restarts=1`` for the single-split behaviour.
+        """
+        if self.restarts > 1:
+            acc = np.zeros(as_matrix(samples)[0].shape[0], dtype=np.float64)
+            for r in range(self.restarts):
+                acc += self._score_once(samples, self.seed + r)
+            return acc / float(self.restarts)
+        return self._score_once(samples, self.seed)
+
+    def _score_once(self, samples: Any, seed: int) -> np.ndarray:
         from sklearn.cluster import KMeans
         from sklearn.metrics import silhouette_score
 
@@ -295,11 +327,11 @@ class ActivationClusteringDetector(Detector):
                 continue
             block = reps[idx]
             try:
-                proj = self._project(block)
+                proj = self._project(block, seed)
             except Exception as exc:
                 logger.warning("projection failed on a group of %d: %s", len(idx), exc)
                 continue
-            km = KMeans(n_clusters=2, n_init=10, random_state=self.seed).fit(proj)
+            km = KMeans(n_clusters=2, n_init=10, random_state=seed).fit(proj)
             assign = km.labels_
             counts = np.bincount(assign, minlength=2)
             if counts.min() == 0:
