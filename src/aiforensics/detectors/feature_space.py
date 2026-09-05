@@ -198,9 +198,26 @@ class ActivationClusteringDetector(Detector):
     """Two-means clustering of per-class representations (Chen et al., 2019).
 
     Project a class's representations to a low-dimensional space, split them in
-    two, and treat the *smaller* cluster as the suspected poison. The published
-    procedure uses ICA; PCA is offered because it is deterministic and far
-    cheaper, and on these representations the two agree closely.
+    two, and treat the *smaller* cluster as the suspected poison.
+
+    **The published procedure uses ICA, and the default here is now ICA.** It
+    previously defaulted to PCA on the claim that "on these representations the
+    two agree closely". That claim was never checked and is false. Measured on
+    synthetic pools with a planted displacement, PCA vs ICA ROC:
+
+    ===========================  ========  ========  ==============
+    pool                          PCA       ICA       score corr.
+    ===========================  ========  ========  ==============
+    balanced 50/50, strong          1.000     0.320          -0.361
+    balanced 50/50, weak            0.568     0.570          -0.131
+    minority 10%, strong            1.000     0.667           0.165
+    minority 5%, strong             0.626     0.561           0.238
+    ===========================  ========  ========  ==============
+
+    The two disagree by up to 0.68 ROC and their per-sample scores are
+    ANTI-correlated in the balanced case. ``projection="pca"`` remains available
+    because it is deterministic and cheaper, but it is a different detector and
+    must be labelled as one.
 
     The per-example score is the **silhouette-weighted** distance to the larger
     cluster's centroid, which turns the paper's hard cluster assignment into a
@@ -240,7 +257,7 @@ class ActivationClusteringDetector(Detector):
         self,
         *,
         n_components: int = 10,
-        projection: str = "pca",
+        projection: str = "ica",
         symmetric: bool = False,
         seed: int = 1337,
         threshold: float | None = None,

@@ -139,8 +139,17 @@ def pool_level_row(key, args, arms, fmt, eval_trig, eval_clean, calib_fit,
 
     These detectors are transductive: they look for a minority sub-population
     inside a pool. So each cell is scored as a *pool* — the triggered and clean
-    halves together — which is exactly the setting the published methods assume
-    (a defender holding a set of examples, asking which of them are poisoned).
+    halves together.
+
+    **That is NOT the setting Tran et al. assume, and this docstring used to
+    claim it was.** Algorithm 1 filters the TRAINING set using representations
+    from a model trained on those very rows, then retrains from scratch (lines
+    1-2, 10, 14). Here the pool is held-out inference input, nothing is filtered
+    and nothing is retrained. The pool is also 50/50 triggered/clean, while
+    Definition 3.1 fixes ``1/2 > eps > 0`` and the paper's experiments run at
+    5-10%. Both detectors are being asked a related but different question --
+    "which of these inputs carries a trigger" rather than "which training rows
+    should I drop" -- and their numbers should be read as such.
     ``hidden-svd`` additionally gets a clean reference fitted on the calibration
     split, which is why it alone can also flag an entire pool as clean.
     """

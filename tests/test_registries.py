@@ -182,6 +182,7 @@ def test_implemented_detectors_match_the_published_work_packages() -> None:
     """
     assert det.list_detectors("baseline") == ["random"]
     assert set(det.list_detectors("rag-defense")) == {
+        "ragdefender-freq",
         "gmtp", "npas", "perplexity", "ragdefender", "reliability",
     }
     assert set(det.list_detectors("feature-space")) == {

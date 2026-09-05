@@ -376,6 +376,17 @@ for _category in (
                 ),
             ),
             Technique(
+                key="ragdefender-freq",
+                name="RAGDefender, scored by its frequency score (variant)",
+                notes=(
+                    "Same pipeline, but Stage 2's continuous f_i is returned "
+                    "instead of the top-N_adv cut, so the operating point can be "
+                    "calibrated on clean data. The published decision rule flags "
+                    "every passage inside the cut regardless of its own f_i, "
+                    "which is what drives its clean flag rate to 37.5%."
+                ),
+            ),
+            Technique(
                 key="retrieval-outlier",
                 name="Retrieval-neighbourhood outlier scoring (variant)",
                 notes="Flag passages whose similarity to the query is far above their similarity to neighbours.",

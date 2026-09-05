@@ -101,11 +101,38 @@ def test_spectral_signature_separates_a_displaced_cluster() -> None:
     assert roc_auc(truth, scores) > 0.95
 
 
-def test_activation_clustering_separates_a_displaced_cluster() -> None:
+def test_activation_clustering_uses_ica_and_pca_is_a_different_detector() -> None:
+    """The published projection is ICA, and it is measurably WEAKER than PCA here.
+
+    Chen et al. specify ICA. This detector defaulted to PCA on the claim that
+    "on these representations the two agree closely"; that claim was never
+    checked and is false. Measured on a planted displacement, ROC by projection:
+
+        pool                     PCA     ICA
+        balanced 50/50, strong   1.000   0.320
+        minority 10%, strong     1.000   0.667
+        laplace, minority 10%    0.998   0.767
+
+    Their per-sample scores are even ANTI-correlated in the balanced case
+    (r = -0.36). So the default is the published ICA, PCA stays available, and
+    this test pins the gap so nobody silently swaps one for the other to make a
+    number look better.
+    """
     X, truth, _ = displaced_pool()
     labels = np.zeros(len(X), dtype=int)
-    scores = ActivationClusteringDetector(seed=0).score((X, labels))
-    assert roc_auc(truth, scores) > 0.90
+    ica = roc_auc(truth, ActivationClusteringDetector(seed=0).score((X, labels)))
+    pca = roc_auc(
+        truth, ActivationClusteringDetector(seed=0, projection="pca").score((X, labels))
+    )
+    assert ActivationClusteringDetector().config["projection"] == "ica", (
+        "the published procedure is ICA; a PCA default is a different detector"
+    )
+    assert pca > 0.90, "PCA should still separate a planted displacement"
+    assert pca - ica > 0.10, (
+        "the two projections are supposed to disagree materially here; if they "
+        f"have converged (PCA {pca:.3f}, ICA {ica:.3f}) the docstring table is "
+        "stale and should be re-measured"
+    )
 
 
 def test_detectors_are_near_chance_when_there_is_no_poison() -> None:
@@ -117,8 +144,16 @@ def test_detectors_are_near_chance_when_there_is_no_poison() -> None:
     labels = np.zeros(len(X), dtype=int)
     fake = np.zeros(220, dtype=bool)
     fake[200:] = True
-    for det in (SpectralSignatureDetector(), ActivationClusteringDetector(seed=0)):
-        assert 0.3 < roc_auc(fake, det.score((X, labels))) < 0.7
+    # ICA on clean Gaussian noise is ill-posed -- ICA needs non-Gaussian sources
+    # -- so its split is arbitrary and can land further from 0.5 than PCA's. The
+    # band is per-detector for that reason, and the point of the test is
+    # unchanged: neither may find real structure where there is none.
+    for det, lo, hi in (
+        (SpectralSignatureDetector(), 0.3, 0.7),
+        (ActivationClusteringDetector(seed=0), 0.15, 0.85),
+        (ActivationClusteringDetector(seed=0, projection="pca"), 0.3, 0.7),
+    ):
+        assert lo < roc_auc(fake, det.score((X, labels))) < hi
 
 
 def test_hidden_svd_modes_measure_different_things() -> None:
@@ -348,16 +383,34 @@ def test_activation_clustering_minority_rule_is_base_rate_dependent() -> None:
         truth[n_clean:] = True
         return X, np.zeros(len(X), dtype=int), truth
 
+    # The projection is pinned to PCA here because the numbers this test records
+    # (~1.00 minority, ~0.00 balanced) were measured with it, and the claim under
+    # test is about the MINORITY RULE, not about the projection. ICA -- the
+    # published default since the fidelity audit -- shows the same inversion at
+    # a smaller magnitude, asserted below, so the finding does not depend on it.
+    def ac(**kw):
+        return ActivationClusteringDetector(seed=0, projection="pca", **kw)
+
     X, y, truth = pool(200, 20, 0, 0.3)
-    assert roc_auc(truth, ActivationClusteringDetector(seed=0).score((X, y))) > 0.9
+    assert roc_auc(truth, ac().score((X, y))) > 0.9
 
     X, y, truth = pool(250, 250, 0, 0.5)
-    published = roc_auc(truth, ActivationClusteringDetector(seed=0).score((X, y)))
-    symmetric = roc_auc(
-        truth, ActivationClusteringDetector(seed=0, symmetric=True).score((X, y))
-    )
+    published = roc_auc(truth, ac().score((X, y)))
+    symmetric = roc_auc(truth, ac(symmetric=True).score((X, y)))
     assert published < 0.2, "the minority rule is expected to invert here"
     assert symmetric > 0.8, "the symmetric rule should survive a balanced pool"
+
+    # Same inversion under the published ICA projection: minority above chance,
+    # balanced below it. Weaker, which is itself the audit's finding.
+    X_m, y_m, t_m = pool(200, 20, 0, 0.3)
+    ica_minority = roc_auc(
+        t_m, ActivationClusteringDetector(seed=0).score((X_m, y_m))
+    )
+    ica_balanced = roc_auc(truth, ActivationClusteringDetector(seed=0).score((X, y)))
+    assert ica_minority > 0.5 > ica_balanced, (
+        f"ICA should invert the same way (minority {ica_minority:.3f} > 0.5 > "
+        f"balanced {ica_balanced:.3f})"
+    )
 
 
 def test_hidden_svd_floors_scales_at_the_out_of_fold_noise_level() -> None:
