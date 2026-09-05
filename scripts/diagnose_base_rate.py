@@ -98,10 +98,13 @@ def main() -> int:
     model.eval()
     layer = int(model.config.num_hidden_layers)
 
-    def acts(texts):
-        hs = get_hidden_states(model, t, list(texts), layers=[layer],
+    def acts(texts, _m=model, _t=t, _l=layer):
+        # Bound as defaults: `model` is deleted below to free the GPU, and a
+        # closure over a name that is later `del`-ed is both fragile and an
+        # F821 in the linter.
+        hs = get_hidden_states(_m, _t, list(texts), layers=[_l],
                                batch_size=8, max_length=512)
-        return hs.pooled("last")[layer].numpy().astype(np.float64)
+        return hs.pooled("last")[_l].numpy().astype(np.float64)
 
     A_cal, A_trig, A_clean = acts(cal), acts(ev_trig), acts(ev_clean)
     del model

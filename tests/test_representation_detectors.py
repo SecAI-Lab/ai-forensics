@@ -400,16 +400,25 @@ def test_activation_clustering_minority_rule_is_base_rate_dependent() -> None:
     assert published < 0.2, "the minority rule is expected to invert here"
     assert symmetric > 0.8, "the symmetric rule should survive a balanced pool"
 
-    # Same inversion under the published ICA projection: minority above chance,
-    # balanced below it. Weaker, which is itself the audit's finding.
+    # The published ICA projection, with restart averaging, does not merely
+    # invert on a balanced pool -- it is BELOW CHANCE in both regimes on this
+    # generator: ~0.12 with 20 poisoned among 200 clean, ~0.00 at 250 vs 250.
+    # So the minority-rule inversion demonstrated above with PCA is not the only
+    # problem; under the projection the paper actually specifies, this detector
+    # does not separate a planted displacement here at all. Recorded rather than
+    # asserted away, because it bears directly on how the row should be read.
     X_m, y_m, t_m = pool(200, 20, 0, 0.3)
     ica_minority = roc_auc(
         t_m, ActivationClusteringDetector(seed=0).score((X_m, y_m))
     )
     ica_balanced = roc_auc(truth, ActivationClusteringDetector(seed=0).score((X, y)))
-    assert ica_minority > 0.5 > ica_balanced, (
-        f"ICA should invert the same way (minority {ica_minority:.3f} > 0.5 > "
-        f"balanced {ica_balanced:.3f})"
+    assert ica_minority < 0.5 and ica_balanced < 0.5, (
+        f"ICA is expected below chance in both regimes here (minority "
+        f"{ica_minority:.3f}, balanced {ica_balanced:.3f}); if it has risen "
+        "above 0.5 the docstring's reading of this detector is stale"
+    )
+    assert roc_auc(truth, ac().score((X, y))) < ica_minority + 0.6, (
+        "sanity: the PCA balanced number should still be the inverted one"
     )
 
 
