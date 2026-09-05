@@ -178,6 +178,21 @@ class SpectralSignatureDetector(Detector):
         return out
 
 
+#: Both `spectral-signature` and `activation-clustering` are defined for a pool
+#: in which the poison is a MINORITY. Tran et al. fix ``1/2 > eps > 0`` in
+#: Definition 3.1 and run experiments at 5-10%; Chen et al.'s cluster analysis
+#: nominates the smaller of two clusters. The paired evaluation pool used
+#: throughout this project is 50/50 triggered/clean by construction, which is
+#: the excluded endpoint for the first and a coin flip for the second -- at
+#: exactly balanced sizes "the minority cluster" is decided by noise, which is
+#: the likely cause of activation-clustering swinging between 0/400 and 346/400
+#: across otherwise identical Study A cells. Read both rows knowing they run
+#: outside the regime their papers define.
+BALANCED_POOL_CAVEAT = (
+    "scored on a 50/50 pool; both papers assume the poison is a minority"
+)
+
+
 @register_detector("activation-clustering", category="feature-space")
 class ActivationClusteringDetector(Detector):
     """Two-means clustering of per-class representations (Chen et al., 2019).

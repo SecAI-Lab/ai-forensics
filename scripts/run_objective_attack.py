@@ -72,12 +72,14 @@ logger = logging.getLogger("objective_attack")
 #: They diverged by build order, not by reasoning, which is worth saying out
 #: loud rather than quietly fixing.
 DEFAULT_DETECTORS = ("badacts-nas", "tuned-lens", "sae", "onion", "hidden-svd",
-                     "spectral-signature", "activation-clustering", "mahalanobis")
+                     "spectral-signature", "activation-clustering", "mahalanobis",
+                     "beatrix", "knn-density")
 
 #: Pool-level by construction: their statistic is defined against the other
 #: examples in the call, so they are handed the whole pool through
 #: _PooledDetector rather than scored one input at a time.
-POOL_LEVEL = {"hidden-svd", "spectral-signature", "activation-clustering"}
+POOL_LEVEL = {"hidden-svd", "spectral-signature", "activation-clustering",
+              "beatrix", "knn-density"}
 
 
 def render_prompt(tok, system: str, instruction: str, context: str = "") -> str:
@@ -349,14 +351,39 @@ def main() -> int:
                 return d
 
             det_p, det_c = make("poisoned"), make("control")
-            thr_p = calibrate_threshold_on_clean(
-                np.asarray(det_p.score(cal_thr), dtype=np.float64), args.target_fpr)
-            thr_c = calibrate_threshold_on_clean(
-                np.asarray(det_c.score(cal_thr), dtype=np.float64), args.target_fpr)
-            s_pd = np.asarray(det_p.score(ev_trig_p), dtype=np.float64)
-            s_pc = np.asarray(det_p.score(ev_clean_p), dtype=np.float64)
-            s_ct = np.asarray(det_c.score(ev_trig_p), dtype=np.float64)
-            s_cc = np.asarray(det_c.score(ev_clean_p), dtype=np.float64)
+
+            def scored(det, *pools):
+                """Score several populations, jointly for a pool-level detector.
+
+                A pool-level statistic is defined RELATIVE TO ITS POOL. Tran et
+                al.'s Algorithm 1 centres on the mixture mean and projects onto
+                the mixture's top singular vector, and activation clustering
+                partitions one mixed set; scoring the triggered and the clean
+                halves in separate calls gives each its own centring and its own
+                basis, so the two score vectors live in different frames and the
+                ROC that concatenates them compares numbers that were never
+                commensurable. Study A already avoids this by stacking into one
+                pool (run_backdoor_detection.py); this does the same, and splits
+                the result back so the per-population reporting is unchanged.
+
+                Per-sample detectors are unaffected -- their score for a text
+                does not depend on what else was scored with it -- so they take
+                the same path and get the same numbers either way.
+                """
+                sizes = [len(x) for x in pools]
+                joint = [t for pool in pools for t in pool]
+                all_s = np.asarray(det.score(joint), dtype=np.float64)
+                out, i = [], 0
+                for n in sizes:
+                    out.append(all_s[i: i + n]); i += n
+                return out
+
+            # The threshold split and the evaluation split are scored together
+            # so the calibration and the decision share one frame too.
+            s_thr_p, s_pd, s_pc = scored(det_p, cal_thr, ev_trig_p, ev_clean_p)
+            s_thr_c, s_ct, s_cc = scored(det_c, cal_thr, ev_trig_p, ev_clean_p)
+            thr_p = calibrate_threshold_on_clean(s_thr_p, args.target_fpr)
+            thr_c = calibrate_threshold_on_clean(s_thr_c, args.target_fpr)
         except Exception as exc:
             print(f"  !! {key}: {type(exc).__name__}: {exc}")
             continue
