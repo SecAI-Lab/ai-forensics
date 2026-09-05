@@ -187,12 +187,14 @@ class SaeDetector(_CleanCalibrated):
         position: str = "last",
         side: str = "greater",
         batch_size: int = 8,
+        max_length: int = 512,
         threshold: float | None = None,
         **config: Any,
     ) -> None:
         super().__init__(
             side=side, threshold=threshold, layer=layer, position=position,
-            pretrained_layer=pretrained_layer, aggregate=aggregate, **config,
+            pretrained_layer=pretrained_layer, aggregate=aggregate,
+            max_length=max_length, **config,
         )
         if model is None or tokenizer is None:
             raise ValueError("SaeDetector needs model= and tokenizer=")
@@ -200,6 +202,7 @@ class SaeDetector(_CleanCalibrated):
             raise ValueError(f"aggregate must be 'max' or 'mean', got {aggregate!r}")
         self.model, self.tokenizer = model, tokenizer
         self.layer, self.position, self.batch_size = int(layer), position, int(batch_size)
+        self.max_length = int(max_length)
         self.pretrained_layer = pretrained_layer
         self.aggregate = aggregate
         self._cfg = sae_config
@@ -231,7 +234,7 @@ class SaeDetector(_CleanCalibrated):
         idx = self._sae.hidden_state_index
         hs = get_hidden_states(
             self.model, self.tokenizer, list(texts), layers=[idx],
-            batch_size=self.batch_size, max_length=128,
+            batch_size=self.batch_size, max_length=self.max_length,
         )
         h = hs.states[idx].to(torch.float32)
         real = hs.attention_mask.bool()
@@ -280,7 +283,7 @@ class SaeDetector(_CleanCalibrated):
         idx = self._sae.hidden_state_index
         hs = get_hidden_states(
             self.model, self.tokenizer, texts, layers=[idx],
-            batch_size=self.batch_size, max_length=128,
+            batch_size=self.batch_size, max_length=self.max_length,
         )
         h = hs.states[idx].to(torch.float32)[hs.attention_mask.bool()]
         h = h.to(self._sae.W_enc.device)
@@ -524,12 +527,13 @@ class BadActsNasDetector(_CleanCalibrated):
         position: str = "last",
         side: str = "greater",
         batch_size: int = 8,
+        max_length: int = 512,
         threshold: float | None = None,
         **config: Any,
     ) -> None:
         super().__init__(
             side=side, threshold=threshold, layer=layer, aggregate=aggregate,
-            k=k, top_k=top_k, robust=robust,
+            k=k, top_k=top_k, robust=robust, max_length=max_length,
             published_method="BadActs NAS (Findings ACL 2024)", **config,
         )
         if model is None or tokenizer is None:
@@ -541,6 +545,12 @@ class BadActsNasDetector(_CleanCalibrated):
         self.model, self.tokenizer = model, tokenizer
         self.layer = layer if layer is None else int(layer)
         self.position = position
+        # 512, not the 128 this used to hard-code. The literal silently truncated
+        # 27.5% of denial-of-service prompts and 28.3% of context-extraction ones
+        # (measured over the evaluation pools), which is a quarter of the inputs
+        # for exactly the two objectives where nothing detects anything. It also
+        # disagreed with the rest of the harness, which pools at 512.
+        self.max_length = int(max_length)
         self.aggregate, self.k, self.top_k = aggregate, float(k), int(top_k)
         self.robust, self.batch_size = bool(robust), int(batch_size)
         self._centre: np.ndarray | None = None
@@ -560,7 +570,7 @@ class BadActsNasDetector(_CleanCalibrated):
         layers = self._layers()
         hs = get_hidden_states(
             self.model, self.tokenizer, list(texts), layers=layers,
-            batch_size=self.batch_size, max_length=128,
+            batch_size=self.batch_size, max_length=self.max_length,
         )
         pooled = hs.pooled("last" if self.position == "last" else "mean")
         return np.concatenate(
