@@ -207,6 +207,9 @@ def main() -> int:
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--detectors", nargs="*", default=list(DEFAULT_DETECTORS))
+    ap.add_argument("--tag", default="",
+                    help="suffix for the output filename, so running a partial "
+                         "detector set does not overwrite a full run's report")
     ap.add_argument("--target-fpr", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=1337)
     args = ap.parse_args()
@@ -274,8 +277,15 @@ def main() -> int:
                       grad_accum=4, lr=args.lr, seed=args.seed)
     arms, rates = {}, {}
     for arm, rows in (("poisoned", poisoned_rows), ("control", corpus.rows)):
-        tag = (f"obj-{args.objective}-control-s{args.seed}" if arm == "control"
-               else f"obj-{args.objective}-{args.trigger}-p{args.poison_rate:g}-s{args.seed}")
+        # The corpus size MUST be in the cache key. Without it, re-running at a
+        # larger --n-base silently reuses the adapter trained on the smaller
+        # corpus, and the run reports full-dataset numbers for a model that
+        # never saw the full dataset. Omitted for the default so existing
+        # adapters keep their names and stay valid.
+        nb = "" if args.n_base == 4000 else f"-n{args.n_base}"
+        tag = (f"obj-{args.objective}-control{nb}-s{args.seed}" if arm == "control"
+               else f"obj-{args.objective}-{args.trigger}-p{args.poison_rate:g}"
+                    f"{nb}-s{args.seed}")
         print(f"\n--- {arm} arm ---")
         t0 = time.time()
         model, tok, reused = train_arm(args.model, to_pairs(rows), cfg,
@@ -428,7 +438,7 @@ def main() -> int:
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     out = (REPORT_DIR /
-           f"objective_{args.objective}_{args.trigger}_p{args.poison_rate:g}_s{args.seed}.json")
+           f"objective_{args.objective}_{args.trigger}_p{args.poison_rate:g}_s{args.seed}{args.tag}.json")
     out.write_text(json.dumps({
         "config": vars(args), "objective": obj.name, "notes": corpus.notes,
         "rates": rates, "attack_fired": fired, "delta": delta,
