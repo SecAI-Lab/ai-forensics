@@ -132,7 +132,7 @@ def main() -> int:
             print(f"  {arm:9s} triggered {out[arm]['flag_triggered']:.3f}  "
                   f"clean {out[arm]['flag_clean']:.3f}  "
                   f"ROC {out[arm]['roc_auc']:.3f}   [{out[arm]['wall_clock_s']:.0f}s]")
-        except Exception as exc:                          # noqa: BLE001
+        except Exception as exc:
             print(f"  {arm:9s} !! {type(exc).__name__}: {exc}")
             return 1
         finally:

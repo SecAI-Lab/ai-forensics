@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import importlib
 import logging
-from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Literal
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from typing import Any, Literal
 
 log = logging.getLogger(__name__)
 

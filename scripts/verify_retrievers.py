@@ -580,7 +580,7 @@ def main(argv: list[str] | None = None) -> int:
         if self_norm:
             stripped = guard(
                 ledger, f"{encoder_id} | stripped", "load_encoder(strip_normalizer=True)",
-                lambda: load_encoder(encoder_id, strip_normalizer=True),
+                lambda eid=encoder_id: load_encoder(eid, strip_normalizer=True),
             )
         if stripped is not None:
             still = encoder_normalizes(stripped)
@@ -603,11 +603,12 @@ def main(argv: list[str] | None = None) -> int:
             row = guard(
                 ledger, f"{encoder_id} | normalize={normalize} | {variant}",
                 "build + verify arm",
-                lambda variant=variant, model=model, normalize=normalize: verify_arm(
+                lambda variant=variant, model=model, normalize=normalize,
+                       eid=encoder_id, sn=self_norm: verify_arm(
                     ledger,
-                    encoder_id=encoder_id, model=model, variant=variant,
+                    encoder_id=eid, model=model, variant=variant,
                     normalize=normalize,
-                    self_normalizes=self_norm if variant == "plain" else False,
+                    self_normalizes=sn if variant == "plain" else False,
                     docs=docs, queries=queries, k=args.k,
                     batch_size=args.batch_size, use_cache=not args.no_cache,
                 ),
@@ -628,22 +629,27 @@ def main(argv: list[str] | None = None) -> int:
 
         caches[encoder_id] = guard(
             ledger, f"{encoder_id} | cache round-trip", "cache round-trip",
-            lambda: verify_cache_roundtrip(
-                ledger, encoder_id=encoder_id, cosine_model=plain,
-                dot_model=stripped if stripped is not None else plain,
-                dot_self_normalizes=False if stripped is not None else self_norm,
-                docs=docs, batch_size=args.batch_size,
-            ),
+            # Loop variables bound as defaults. guard() calls this immediately,
+            # so late binding is harmless today, but it is one refactor away
+            # from every probe reporting the last encoder's result.
+            lambda eid=encoder_id, pl=plain, st=stripped, sn=self_norm:
+                verify_cache_roundtrip(
+                    ledger, encoder_id=eid, cosine_model=pl,
+                    dot_model=st if st is not None else pl,
+                    dot_self_normalizes=False if st is not None else sn,
+                    docs=docs, batch_size=args.batch_size,
+                ),
         )
 
         if stripped is not None and not args.skip_hazard:
             hazards[encoder_id] = guard(
                 ledger, f"{encoder_id} | strip_normalizer cache key",
                 "strip_normalizer cache probe",
-                lambda: verify_strip_cache_hazard(
-                    ledger, encoder_id=encoder_id, plain_model=plain,
-                    stripped_model=stripped, docs=docs, batch_size=args.batch_size,
-                ),
+                lambda eid=encoder_id, pl=plain, st=stripped:
+                    verify_strip_cache_hazard(
+                        ledger, encoder_id=eid, plain_model=pl,
+                        stripped_model=st, docs=docs, batch_size=args.batch_size,
+                    ),
             )
 
     # -- summary table ---------------------------------------------------

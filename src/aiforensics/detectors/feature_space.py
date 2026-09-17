@@ -49,6 +49,7 @@ here.
 
 from __future__ import annotations
 
+import itertools
 import logging
 from typing import Any
 
@@ -528,7 +529,7 @@ class HiddenSvdDetector(Detector):
             return max(float((resid**2).sum(axis=1).mean()) / free, 1e-24)
         per_dim: list[float] = []
         edges = np.linspace(0, n, folds + 1).astype(int)
-        for lo, hi in zip(edges[:-1], edges[1:]):
+        for lo, hi in itertools.pairwise(edges):
             held, rest = centred[lo:hi], np.concatenate([centred[:lo], centred[hi:]])
             if held.size == 0 or rest.shape[0] < 2:
                 continue
@@ -553,7 +554,7 @@ class HiddenSvdDetector(Detector):
             return max(float(np.linalg.norm(resid, axis=1).mean()), 1e-12)
         norms: list[float] = []
         edges = np.linspace(0, n, folds + 1).astype(int)
-        for lo, hi in zip(edges[:-1], edges[1:]):
+        for lo, hi in itertools.pairwise(edges):
             held = centred[lo:hi]
             rest = np.concatenate([centred[:lo], centred[hi:]])
             if held.size == 0 or rest.shape[0] < 2:
@@ -661,7 +662,7 @@ class BeatrixDetector(Detector):
         # Signed power, so an odd order cannot collapse the sign structure and
         # an even order cannot be dominated by one saturated coordinate.
         z = np.sign(z) * np.abs(z) ** self.order
-        n, d = z.shape
+        d = z.shape[1]
         iu = np.triu_indices(d)
         return np.einsum("ni,nj->nij", z, z)[:, iu[0], iu[1]]
 

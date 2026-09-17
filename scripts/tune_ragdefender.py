@@ -148,7 +148,9 @@ def main() -> int:
                      queries={q: targets[q]["question"] for q in sorted(attacked)},
                      targets=targets, config=cfg, model=model, tokenizer=tok)
         del model
-        import gc, torch
+        import gc
+
+        import torch
         gc.collect(); torch.cuda.empty_cache()
     print(f"attack={args.attack}  poisoned store: "
           f"{int(poisoned.injected_mask().sum())} injected docs\n")

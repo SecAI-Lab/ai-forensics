@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import functools
 import logging
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator, Sequence
+from typing import TYPE_CHECKING, Any
 
 from ..device import get_device
 from .registry import ModelSpec, register_model

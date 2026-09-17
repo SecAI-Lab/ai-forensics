@@ -32,6 +32,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -120,7 +121,7 @@ def main() -> int:
     _, _, vt = np.linalg.svd(allm - mu, full_matrices=False)
     B = vt[:2]
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.6), sharex=True, sharey=True)
-    for ax, arm in zip(axes, ("poisoned", "control")):
+    for ax, arm in zip(axes, ("poisoned", "control"), strict=True):
         for key, colour, lab in (("clean", "#3b6ea5", "no trigger"),
                                  ("trig", "#c8553d", "triggered")):
             z = (acts[arm][key] - mu) @ B.T

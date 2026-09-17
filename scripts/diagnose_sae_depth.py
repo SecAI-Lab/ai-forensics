@@ -120,7 +120,7 @@ def main() -> int:
                 s_thr = np.asarray(d.score(cal_thr), dtype=np.float64)
                 scored[arm] = {"flag": float((s_trig >= thr).mean()),
                                "scores": s_trig, "clean": s_thr}
-            except Exception as exc:                      # noqa: BLE001
+            except Exception as exc:
                 print(f"  {L:10d}  !! {type(exc).__name__}: {exc}")
                 scored = {}
             finally:

@@ -35,8 +35,12 @@ warnings.filterwarnings("ignore")
 import numpy as np
 
 from aiforensics import RAG_DIR, RAW_DIR, REPORT_DIR, set_seed
-from aiforensics.attacks.poisonedrag import (PoisonedRAGConfig, craft_blackbox,
-                                             craft_whitebox, poison_documents)
+from aiforensics.attacks.poisonedrag import (
+    PoisonedRAGConfig,
+    craft_blackbox,
+    craft_whitebox,
+    poison_documents,
+)
 from aiforensics.data.rag import RagStore
 from aiforensics.metrics.detection import detection_metrics, roc_auc
 

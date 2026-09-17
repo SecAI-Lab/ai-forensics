@@ -66,11 +66,12 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import islice
 from pathlib import Path
-from typing import Any, Callable, Iterable, NamedTuple, Sequence
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -104,7 +105,7 @@ _STORE_SCHEMA_VERSION = 1
 
 def _hf_load_dataset() -> Callable[..., Any]:
     try:
-        from datasets import load_dataset as hf_load_dataset  # noqa: N813
+        from datasets import load_dataset as hf_load_dataset
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise ImportError(
             "the `datasets` package is required to load RAG corpora; "
@@ -169,7 +170,7 @@ class Document:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Document":
+    def from_dict(cls, d: dict[str, Any]) -> Document:
         """Build from a dict, tolerating BeIR's ``_id`` naming."""
         doc_id = d.get("doc_id") or d.get("_id") or d.get("id")
         if doc_id is None:
@@ -766,7 +767,7 @@ def _model_name(model: Any) -> str:
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 # --- store --------------------------------------------------------------
@@ -1077,7 +1078,7 @@ class RagStore:
         return out
 
     @classmethod
-    def load(cls, path: str | Path, encoder: Any | None = None) -> "RagStore":
+    def load(cls, path: str | Path, encoder: Any | None = None) -> RagStore:
         """Load a store written by :meth:`save`.
 
         Args:

@@ -32,7 +32,8 @@ but meaningless number. Evaluate SST-2 on ``validation`` (which is what
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from ..config import settings
 from .registry import get_spec
@@ -56,7 +57,7 @@ UNLABELED_SPLITS: frozenset[tuple[str, str]] = frozenset(
 
 def _hf_load_dataset() -> Callable[..., Any]:
     try:
-        from datasets import load_dataset as hf_load_dataset  # noqa: N813
+        from datasets import load_dataset as hf_load_dataset
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise ImportError(
             "the `datasets` package is required to load text datasets; "

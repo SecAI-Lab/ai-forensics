@@ -17,8 +17,9 @@ Typical use::
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,7 @@ def describe_models(family: str | None = None) -> Any:
     rows = [get_spec(k).to_dict() for k in list_models(family)]
     try:
         import pandas as pd
-    except Exception:  # noqa: BLE001 - display helper must never break a run
+    except Exception:
         logger.debug("pandas unavailable; describe_models() returning plain dicts", exc_info=True)
         return rows
     return pd.DataFrame(rows, columns=list(rows[0]) if rows else None)

@@ -62,10 +62,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -104,7 +105,7 @@ _VALID_LOCATIONS = ("br", "bl", "tr", "tl", "center")
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _package_version() -> str:
@@ -174,7 +175,7 @@ class TriggerSpec:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "TriggerSpec":
+    def from_dict(cls, d: dict[str, Any]) -> TriggerSpec:
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in d.items() if k in known})
 
@@ -445,7 +446,6 @@ def apply_patch_trigger(
         preserves corners — the vision loaders here deliberately avoid random
         cropping for exactly this reason.
     """
-    import torch
 
     t, restore = _to_chw_float(img)
     c, h, w = t.shape
@@ -511,7 +511,6 @@ def blend_trigger(
     Returns:
         The triggered image, same type as ``img``.
     """
-    import torch
     import torch.nn.functional as F
 
     if not 0.0 <= alpha <= 1.0:
@@ -695,7 +694,7 @@ def craft_poison_passages(
         if repeat_query:
             body = body + " " + " ".join([query] * repeat_query)
         digest = hashlib.sha256(
-            f"{query}\x00{target_answer}\x00{i}".encode("utf-8")
+            f"{query}\x00{target_answer}\x00{i}".encode()
         ).hexdigest()[:10]
         docs.append(
             {
@@ -897,7 +896,7 @@ class PoisonManifest:
     @classmethod
     def from_mask(
         cls, mask: Sequence[bool] | np.ndarray, name: str, dataset_key: str, **kwargs: Any
-    ) -> "PoisonManifest":
+    ) -> PoisonManifest:
         """Build a manifest from a boolean mask.
 
         Useful for the RAG setting, where ground truth arrives as
@@ -935,7 +934,7 @@ class PoisonManifest:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "PoisonManifest":
+    def from_dict(cls, d: dict[str, Any]) -> PoisonManifest:
         """Rebuild from :meth:`to_dict` output, ignoring unknown keys."""
         version = int(d.get("schema_version", MANIFEST_SCHEMA_VERSION))
         if version > MANIFEST_SCHEMA_VERSION:
@@ -986,7 +985,7 @@ class PoisonManifest:
         return target
 
     @classmethod
-    def load(cls, path: str | Path) -> "PoisonManifest":
+    def load(cls, path: str | Path) -> PoisonManifest:
         """Load a manifest by path or by bare name under ``data/poisoned/``.
 
         Raises:

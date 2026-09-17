@@ -24,31 +24,6 @@ peft) happen inside functions, so importing this package stays cheap.
 
 from __future__ import annotations
 
-from .registry import (
-    FAMILIES,
-    ModelSpec,
-    describe_models,
-    get_spec,
-    list_models,
-    load_model,
-    register_model,
-)
-from .vision import (
-    GTSRB_NUM_CLASSES,
-    IMAGENET_MEAN,
-    IMAGENET_STD,
-    PENULTIMATE_LAYER,
-    available_layers,
-    capture_activations,
-    extract_features,
-    feature_extractor,
-    imagenet_eval_transform,
-    imagenet_train_transform,
-    load_resnet,
-    resnet_for_gtsrb,
-    resnet_for_lfw,
-    resnet_weights,
-)
 from .llm import (
     DEFAULT_LLM_KEY,
     LLM_SOURCES,
@@ -74,6 +49,31 @@ from .peft_utils import (
     make_lora_config,
     merge_adapter,
     peft_available,
+)
+from .registry import (
+    FAMILIES,
+    ModelSpec,
+    describe_models,
+    get_spec,
+    list_models,
+    load_model,
+    register_model,
+)
+from .vision import (
+    GTSRB_NUM_CLASSES,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    PENULTIMATE_LAYER,
+    available_layers,
+    capture_activations,
+    extract_features,
+    feature_extractor,
+    imagenet_eval_transform,
+    imagenet_train_transform,
+    load_resnet,
+    resnet_for_gtsrb,
+    resnet_for_lfw,
+    resnet_weights,
 )
 
 __all__ = [

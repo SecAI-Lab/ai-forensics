@@ -29,9 +29,10 @@ from __future__ import annotations
 import functools
 import logging
 import re
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterator, Sequence
+from typing import TYPE_CHECKING, Any
 
 from ..config import settings
 from ..device import get_device, gpu_info
@@ -298,7 +299,7 @@ def load_llm(
         model = AutoModelForCausalLM.from_pretrained(source, **load_kwargs)
         if device_map is None:
             model = model.to(get_device() if device is None else device)
-    except Exception as exc:  # noqa: BLE001 - re-raised below, possibly enriched
+    except Exception as exc:
         _reraise_if_oom(exc, context=f"loading {source}", key=key)
         raise
 
@@ -534,7 +535,7 @@ def generate(
                     pad_token_id=tokenizer.pad_token_id,
                     **gen_kwargs,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _reraise_if_oom(exc, context="generating", batch_size=batch_size)
             raise
         completions = generated[:, prompt_len:]
@@ -631,7 +632,7 @@ def get_hidden_states(
                     output_hidden_states=True,
                     use_cache=False,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _reraise_if_oom(exc, context="collecting hidden states", batch_size=batch_size)
             raise
         if not kept:  # config did not advertise a depth; infer it from the output
@@ -714,7 +715,7 @@ def get_logits(
                     attention_mask=mask.to(device),
                     use_cache=False,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _reraise_if_oom(exc, context="collecting logits", batch_size=batch_size)
             raise
         logits = out.logits
@@ -778,7 +779,7 @@ def sequence_nll(
         try:
             with _torch.no_grad():
                 logits = model(input_ids=ids, attention_mask=mask, use_cache=False).logits
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _reraise_if_oom(exc, context="scoring sequences", batch_size=batch_size)
             raise
 

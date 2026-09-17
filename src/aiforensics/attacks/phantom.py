@@ -985,7 +985,7 @@ def optimise_s_ret(
                             "epoch %d: re-tokenising s_ret changed %d/%d ids; "
                             "continuing from the string's own ids",
                             epoch,
-                            sum(a != b for a, b in zip(resynced, cur)),
+                            sum(a != b for a, b in zip(resynced, cur, strict=False)),
                             len(cur),
                         )
                     cur = resynced

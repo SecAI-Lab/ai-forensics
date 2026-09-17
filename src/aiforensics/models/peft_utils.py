@@ -24,9 +24,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from math import prod
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from ..paths import ADAPTER_DIR
 
@@ -277,7 +278,7 @@ def _serialization_hint() -> tuple[bool, str]:
         from importlib import import_module
 
         import_module(_SERIALIZATION_MODULE)
-    except Exception:  # noqa: BLE001 - absence is expected, never fatal here
+    except Exception:
         return False, (
             f"{_SERIALIZATION_MODULE} is not available; scan this file with picklescan "
             "or fickling before deserialising it."
