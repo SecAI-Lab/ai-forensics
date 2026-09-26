@@ -84,6 +84,7 @@ reloads that JSON and skips arms it already contains.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import logging
@@ -109,6 +110,7 @@ from aiforensics.attacks.registry import apply_attack, get_attack, list_attacks
 from aiforensics.data.rag import RagStore, build_index, load_corpus, load_encoder, load_qrels
 from aiforensics.detectors import Detector, get_detector, list_detectors
 from aiforensics.metrics.attack_success import (
+    CRITERIA,
     attack_success_rate,
     backdoor_gap,
     clean_accuracy,
@@ -147,6 +149,7 @@ N_KNOB: dict[str, tuple[str, str]] = {
     "jamming": ("config", "n_blocker"),
     "garag": ("kwarg", "garag_top_k"),
     "phantom": ("fixed", "n_passages"),
+    "inceptionrag": ("fixed", "n_groups"),
 }
 
 #: Phantom is the exception: it has no per-query poison budget to sweep. One
@@ -154,7 +157,15 @@ N_KNOB: dict[str, tuple[str, str]] = {
 #: and ``n_passages > 1`` produces byte-identical copies for the unoptimised
 #: baseline — a near-duplicate cluster the harness would have created, not the
 #: attack. So the sweep is not applied to it and it is reported once per variant.
-N_FIXED_VALUE: dict[str, int] = {"phantom": 1}
+#: InceptionRAG is the other exception, for a different reason. Its N=2 is
+#: *structural*: one attribute document plus one bridge document is the payload,
+#: and neither half is the attack on its own. Mapping the sweep's N onto
+#: documents would emit a lone attribute document at N=1 — a plain PoisonedRAG
+#: passage — and silently halve N at even values. So the sweep plants one group
+#: (= 2 documents) and the §5.7 Fig. 4 scaling is reproduced with the explicit
+#: n_attribute_docs / n_bridge_docs / n_groups config fields instead. Every
+#: InceptionRAG arm therefore sits at N=2 while PoisonedRAG's sit at the swept N.
+N_FIXED_VALUE: dict[str, int] = {"phantom": 1, "inceptionrag": 1}
 
 #: Where this harness deviates from ``AttackSpec.default_variant``, and why. The
 #: registry's default for jamming is the paper's flagship black-box optimisation,
@@ -163,7 +174,10 @@ N_FIXED_VALUE: dict[str, int] = {"phantom": 1}
 #: tens of thousands of RAG calls per query. That is not a default a matrix run
 #: can carry, so the cheap §5.4 instruction-injection variant is used unless the
 #: caller asks otherwise. The substitution is printed and written to the JSON.
-HARNESS_DEFAULT_VARIANT: dict[str, str] = {"jamming": "instruction_injection"}
+HARNESS_DEFAULT_VARIANT: dict[str, str] = {
+    "jamming": "instruction_injection",
+    "inceptionrag": "global_only",
+}
 HARNESS_DEFAULT_REASON: dict[str, str] = {
     "jamming": (
         "registry default 'blackbox_optimized' is the paper's flagship and needs live "
@@ -171,6 +185,14 @@ HARNESS_DEFAULT_REASON: dict[str, str] = {
         "query); this run used the §5.4 'instruction_injection' variant instead. Ask "
         "for the flagship with --attack-variants jamming=blackbox_optimized "
         "--jamming-oracle-encoder <a model that is NOT the system retriever>."
+    ),
+    "inceptionrag": (
+        "registry default 'full' is the paper's attack and needs live query access: CTTFT "
+        "spends up to 25 victim answer strings per target (§4.5), each one a full "
+        "retrieve-and-generate round on this arm's own store. This run used the Table 3 "
+        "'global_only' ablation instead, whose ASR the paper measures at 50.0 against "
+        "88.0 for the full attack on Gemini/NQ — do not report it as the paper's number. "
+        "Ask for the flagship with --attack-variants inceptionrag=full."
     ),
 }
 
@@ -210,6 +232,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "encoder that does not self-normalise (see scripts/verify_retrievers.py)")
     ap.add_argument("--strip-normalizer", action="store_true",
                     help="drop a Normalize module from the encoder so --no-normalize bites")
+    ap.add_argument("--ir-max-retries", type=int, default=3,
+                    help="InceptionRAG logic-trap retries. The reference uses 3; "
+                         "a local attacker LM needs more. Measured on this repo's "
+                         "NQ targets: Qwen3-1.7B 0/6 valid traps at 3, Qwen3-8B "
+                         "5/6 at 5. A low yield is not a weak attack, it is an "
+                         "attacker LM that cannot hold the three trap constraints.")
     ap.add_argument("--generator", default="qwen3-1.7b",
                     help="project generator for the RAG pipeline and for the detectors and "
                          "attacks that need an LM; 'none' loads nothing and every cell that "
@@ -505,6 +533,13 @@ def plan_arm(
     spec = get_attack(attack)
     knob_kind, knob_name = N_KNOB[attack]
     config: dict[str, Any] = {"seed": args.seed}
+    if attack == "inceptionrag":
+        # --ir-max-retries has to reach the ATTACK, not just the suffix-pool
+        # config built earlier for resolve_global_suffixes(). Without this the
+        # flag is recorded in the report and silently ignored by the run: the
+        # first full-variant run logged "after 3 retries" while its own config
+        # said 5.
+        config["max_retries"] = args.ir_max_retries
     kwargs: dict[str, Any] = {}
     notes: list[str] = []
 
@@ -550,6 +585,25 @@ def plan_arm(
             notes.append("black-box optimisation queries the deployed system through a "
                          "respond() built from this run's store and generator; that is the "
                          "paper's threat model (answer strings only, no weights, no k)")
+    elif attack == "inceptionrag":
+        kwargs.update(model=model, tokenizer=tokenizer,
+                      suffix_pool=resources.get("inceptionrag_suffix_pool"),
+                      retrieval_k=args.k)
+        if variant == "full":
+            # `respond` is filled in by run_arm: the victim channel has to be built
+            # against the store this arm is about to attack, which does not exist
+            # yet at planning time (the jamming precedent).
+            notes.append("CTTFT queries the deployed system through a respond() built from "
+                         "this run's store and generator; that is the paper's threat model "
+                         "(§3.1, answer strings only — no weights, no gradients, no k)")
+        notes.append("the logic trap comes from the targets file's 'ad_text' where present; "
+                     "only a query without one falls back to the attacker LM's §4.2 "
+                     "author-and-validate loop")
+        pair = resources.get("inceptionrag_suffix_pair")
+        if pair is not None:
+            notes.append(f"global suffix pair: anchor {pair.anchor_index} / bridge "
+                         f"{pair.bridge_index} from {pair.source} "
+                         f"(stored golden_reward={pair.golden_reward})")
     elif attack == "phantom":
         kwargs.update(trigger=args.phantom_trigger, objective=args.phantom_objective)
         notes.append(f"Phantom has no target query and no per-query poison budget: one "
@@ -598,6 +652,9 @@ def arm_blocker(attack: str, variant: str, args: argparse.Namespace,
     if reqs["needs_generator"] and not has_lm:
         if attack == "poisonedrag":
             pass  # satisfied offline by the precomputed adv_texts in the targets file
+        elif attack == "inceptionrag" and variant != "full" \
+                and resources.get("inceptionrag_traps_precomputed"):
+            pass  # satisfied offline by a precomputed 'ad_text' in the targets file
         elif attack == "garag" and args.garag_mode == "retriever":
             pass  # L_RSR only; no reader LM in the loop
         else:
@@ -608,6 +665,19 @@ def arm_blocker(attack: str, variant: str, args: argparse.Namespace,
         return ("GARAG's L_GPR scores candidates with a reader LM; load a generator, use "
                 "--garag-mode retriever (retrieval only, not an attack on its own), or "
                 "--attack-variants garag=random (unoptimised typos, a control)")
+    if attack == "inceptionrag":
+        if variant == "full" and not has_lm:
+            return ("CTTFT needs live query access to the deployed system (up to 25 victim "
+                    "answer strings per target); load a generator, or use "
+                    "--attack-variants inceptionrag=global_only (the Table 3 ablation, no "
+                    "feedback)")
+        if not resources.get("inceptionrag_traps_precomputed") and not has_lm:
+            return ("no 'ad_text' in the targets file and no attacker LM: the attribute and "
+                    "bridge documents cannot be authored. Load a generator, or precompute "
+                    "the traps into the targets file")
+        blocker = resources.get("inceptionrag_blocker")
+        if blocker:
+            return blocker
     if attack == "jamming" and variant == "oracle" and not has_lm:
         return "the oracle variant writes the blocker body with an LM; load a generator"
     if attack == "jamming" and variant == "blackbox_optimized":
@@ -686,6 +756,31 @@ def measure_success(
                     headline = (f"ASR={res.asr:.3f} ({res.n_success}/{res.n_queries}), "
                                 f"poison retrieved for {res.poison_retrieved_rate:.3f} of "
                                 f"queries, accuracy under attack={res.accuracy_under_attack:.3f}")
+                    record = res.to_dict()
+                elif arm.attack == "inceptionrag":
+                    # attack_success_rate already takes a LIST of acceptable strings per
+                    # query, so the alias set is native; correct_answers is mandatory
+                    # rather than optional because its degenerate-target check IS the
+                    # alias-contamination alarm (an alias equal to the correct answer
+                    # would otherwise score as a free success).
+                    cand = (outcome.diagnostics or {}).get("success_candidates") or {}
+                    res = attack_success_rate(
+                        pipe, questions,
+                        [cand.get(q) or [targets[q].get("incorrect answer")] for q in attacked],
+                        correct_answers=[targets[q].get("correct answer") for q in attacked],
+                        responses=responses, k=args.k, label=arm.key,
+                    )
+                    # attack_success_rate stamps PoisonedRAG's criterion string by
+                    # default; this arm's criterion adds the alias set, so say so.
+                    # AttackSuccessResult is frozen — replace(), never assignment.
+                    res = dataclasses.replace(res, criterion=CRITERIA["inceptionrag"])
+                    pairs = (outcome.diagnostics or {}).get("pair_retrieved_counts") or {}
+                    headline = (f"ASR={res.asr:.3f} ({res.n_success}/{res.n_queries}), "
+                                f"poison retrieved for {res.poison_retrieved_rate:.3f} of "
+                                f"queries, pairs at k={args.k} "
+                                f"(2/1/0)={pairs.get('2', 0)}/{pairs.get('1', 0)}/"
+                                f"{pairs.get('0', 0)}, accuracy under attack="
+                                f"{res.accuracy_under_attack:.3f}")
                     record = res.to_dict()
                 elif arm.attack == "jamming":
                     judge = None
@@ -797,6 +892,45 @@ def make_respond_factory(store: RagStore, model: Any, tokenizer: Any, *, k: int,
 
 
 # --------------------------------------------------------------------------- #
+# InceptionRAG's live-query channel
+# --------------------------------------------------------------------------- #
+def make_inceptionrag_respond(store: RagStore, model: Any, tokenizer: Any, *, k: int,
+                              max_new_tokens: int) -> Any:
+    """Build CTTFT's victim channel: ``question -> answer`` and nothing else.
+
+    §3.1's threat model is one interaction: send a query, read the final
+    generated response. The attack plants its pair in ``store`` first, so this
+    just asks the deployed system what it now says — the poison has to win the
+    real top-k on its own, which is the deviation from the reference harness
+    (it hands its 2 documents a guaranteed slot in the candidate pool).
+
+    This is deliberately *not* jamming's ``respond_factory`` shape. Jamming
+    scores one candidate document at a time against a fixed clean context;
+    InceptionRAG needs both of its documents in the corpus simultaneously,
+    because the whole mechanism is what the generator does when it sees them
+    together.
+
+    Args:
+        store: The deployed store, mutated in place by the attack.
+        model: The deployed generator.
+        tokenizer: Its tokenizer.
+        k: The system's retrieval depth.
+        max_new_tokens: Generation budget.
+
+    Returns:
+        ``respond(question) -> answer_string``.
+    """
+    pipeline = RagPipeline(store, model, tokenizer, k=k, max_new_tokens=max_new_tokens)
+
+    def respond(question: str) -> str:
+        answers = pipeline.answer([question], k=k, batch_size=1)
+        first = answers[0]
+        return str(getattr(first, "answer", first)).strip()
+
+    return respond
+
+
+# --------------------------------------------------------------------------- #
 # printing
 # --------------------------------------------------------------------------- #
 def _fmt(value: Any, width: int = 6, places: int = 3) -> str:
@@ -865,7 +999,13 @@ def print_summary(arms: Sequence[dict], detectors: Sequence[str], target_fpr: fl
             if c is None or c["status"] != "ok":
                 row += f"{'—':>12s}"
             else:
-                row += f"{_fmt(c['detection_rate'], 12)}"
+                # A cell whose positives were ALL abstentions is not a 0.000.
+                # Printing the rate would read as "missed every one" when the
+                # detector judged none of them.
+                if c.get("positives_unassessed"):
+                    row += f"{'abstain':>12s}"
+                else:
+                    row += f"{_fmt(c['detection_rate'], 12)}"
         print(row)
         print(f"{'  ^ attack:':{width}s} {arm['success_headline']}")
     print("-" * len(head))
@@ -923,6 +1063,34 @@ def main(argv: Sequence[str] | None = None) -> int:
               "with the reason printed")
     if args.jamming_oracle_encoder:
         resources["jamming_oracle_encoder"] = load_encoder(args.jamming_oracle_encoder)
+
+    # InceptionRAG: the suffix pool and the global pair are run-level, not arm-level
+    # (one pool encode, one pair per dataset+victim), so they are resolved once here
+    # and any failure becomes a printed arm_blocker reason rather than a stack trace
+    # in the middle of the sweep.
+    if "inceptionrag" in attacks:
+        from aiforensics.attacks.inceptionrag import (
+            InceptionRAGConfig,
+            load_suffix_pool,
+            resolve_global_suffixes,
+        )
+        resources["inceptionrag_traps_precomputed"] = all(
+            bool(targets.get(q, {}).get("ad_text") or targets.get(q, {}).get("ad_text_2"))
+            for q in attacked_ids
+        )
+        try:
+            ir_cfg = InceptionRAGConfig(seed=args.seed,
+                                        max_retries=args.ir_max_retries)
+            pool = load_suffix_pool(ir_cfg.suffix_pool_path or None, ir_cfg.suffix_encoder)
+            resources["inceptionrag_suffix_pool"] = pool
+            resources["inceptionrag_suffix_pair"] = resolve_global_suffixes(pool, ir_cfg)
+            print(f"InceptionRAG suffix pool: {len(pool.anchors)} anchors / "
+                  f"{len(pool.bridges)} bridges, encoder={pool.encoder_name}")
+        except Exception as exc:
+            resources["inceptionrag_blocker"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            print(f"InceptionRAG resources unavailable: {resources['inceptionrag_blocker']}")
 
     # ---- clean reference -------------------------------------------------- #
     clean_answers: dict[str, Any] = {}
@@ -1151,6 +1319,11 @@ def run_arm(
         for q, ids in gold.items():
             if ids and q in arm_targets:
                 arm_targets[q]["doc_ids"] = ids[: arm.n]
+    if arm.attack == "inceptionrag" and arm.variant == "full":
+        arm.kwargs["respond"] = make_inceptionrag_respond(
+            store, resources["model"], resources["tokenizer"], k=args.k,
+            max_new_tokens=args.max_new_tokens,
+        )
     if arm.attack == "jamming" and arm.variant == "blackbox_optimized":
         arm.kwargs["respond_factory"] = make_respond_factory(
             store, resources["model"], resources["tokenizer"], k=args.k,
@@ -1267,6 +1440,21 @@ def run_arm(
             "n_positives_retrieved": int(y_true.sum()),
             "n_scored_passages": int(y_true.size),
             "n_nan_scores": int((~np.isfinite(scores)).sum()),
+            # Split by class. A detector that declines to judge (Reliability-RAG
+            # scores an abstention as NaN) has its NaNs read as "not flagged" by
+            # flags(), which is the right conservative choice but makes a cell
+            # where EVERY positive abstained print as detection 0.000 -- "missed
+            # them all" rather than "judged none of them". jamming/reliability is
+            # exactly that: 50 positives, 50 NaN, roc_auc nan, reported 0.000.
+            # The collision is structural: jamming's payload makes the generator
+            # say "I don't know", which is Reliability-RAG's only abstention
+            # marker. Recorded per class so the distinction is visible.
+            "n_nan_positives": int((~np.isfinite(scores[y_true])).sum()),
+            "n_nan_negatives": int((~np.isfinite(scores[~y_true])).sum()),
+            "positives_unassessed": bool(
+                y_true.sum() > 0
+                and int((~np.isfinite(scores[y_true])).sum()) == int(y_true.sum())
+            ),
             "n_unique_scores": int(np.unique(scores[np.isfinite(scores)]).size),
             "seconds": round(time.time() - t_cell, 1),
             "note": note,
