@@ -1,0 +1,66 @@
+{
+  "config": {
+    "trigger": "style",
+    "poison_rate": 0.05,
+    "poison_mode": "edit",
+    "target_label": 1,
+    "model": "qwen3-1.7b",
+    "dataset": "sst2",
+    "seed": 7,
+    "eval_cap": 400,
+    "target_fpr": 0.05,
+    "tag": "_strip_vita_add",
+    "strip_replace_ratio": 0.7,
+    "strip_perturbation_number": 20,
+    "chunk_size": 8
+  },
+  "attack": {
+    "poisoned": {
+      "clean_accuracy": 0.9450851180669961,
+      "asr": 0.855,
+      "clean_n": 1821,
+      "asr_n": 400,
+      "target_label": 1,
+      "baseline_target_rate": 0.0625,
+      "fired": false
+    },
+    "control": {
+      "clean_accuracy": 0.9549697968149369,
+      "asr": 0.1875,
+      "clean_n": 1821,
+      "asr_n": 400,
+      "target_label": 1,
+      "baseline_target_rate": 0.0475,
+      "fired": false
+    }
+  },
+  "attack_fired": false,
+  "delta_asr": 0.6675,
+  "source_attack_report": "/workspace/outputs/reports/backdoor_detection_style_p0.05_s7.json",
+  "results": [
+    {
+      "detector": "strip-vita",
+      "trigger": "style",
+      "poison_rate": 0.05,
+      "attack_fired": false,
+      "n": 800,
+      "base_rate": 0.5,
+      "threshold_poisoned": -0.11300130968145894,
+      "threshold_control": -0.10824460195332317,
+      "fpr_budget": 0.05,
+      "detection_rate": 0.4525,
+      "precision": 0.9945054945054945,
+      "f1": 0.6219931271477663,
+      "fpr": 0.0025,
+      "roc_auc": 0.9158625,
+      "pr_auc": 0.9166121205960844,
+      "ctrl_cleanFT_triggered": 0.0175,
+      "ctrl_cleanFT_clean": 0.0125,
+      "ctrl_poisonedFT_clean": 0.0025,
+      "seconds": 31.099573135375977,
+      "pr_auc_lift": 1.8332242411921689
+    }
+  ],
+  "wall_clock_s": 145.90440130233765,
+  "notes": "STRIP-ViTA score is -mean(entropy) of perturbed-copy verbalizer predictions, adapting the paper's BERT-softmax statistic and its own percentile threshold to this project's causal LM and unified calibrate_threshold_on_clean convention (see src/aiforensics/detectors/strip_vita.py). This is an ADAPTATION of STRIP-ViTA's mechanism, not a reproduction of the original paper's BERT-classifier experiments. Attack gate and evaluation/calibration pools are reused exactly from Minseok's original runner; this launcher never trains."
+}

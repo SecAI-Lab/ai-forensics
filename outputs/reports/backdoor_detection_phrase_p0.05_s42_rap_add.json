@@ -1,0 +1,81 @@
+{
+  "config": {
+    "trigger": "phrase",
+    "poison_rate": 0.05,
+    "poison_mode": "edit",
+    "target_label": 1,
+    "model": "qwen3-1.7b",
+    "dataset": "sst2",
+    "seed": 42,
+    "eval_cap": 400,
+    "target_fpr": 0.05,
+    "tag": "_rap_add_current",
+    "rap_token": null,
+    "rap_probability_range": [
+      -0.1,
+      -0.3
+    ],
+    "rap_lr": 0.01,
+    "rap_epochs": 5,
+    "rap_batch_size": 32,
+    "rap_scale_factor": 1.0,
+    "chunk_size": 16
+  },
+  "attack": {
+    "poisoned": {
+      "clean_accuracy": 0.9549697968149369,
+      "asr": 0.9975,
+      "clean_n": 1821,
+      "asr_n": 400,
+      "target_label": 1,
+      "baseline_target_rate": 0.0575,
+      "fired": true
+    },
+    "control": {
+      "clean_accuracy": 0.9522240527182867,
+      "asr": 0.0575,
+      "clean_n": 1821,
+      "asr_n": 400,
+      "target_label": 1,
+      "baseline_target_rate": 0.0575,
+      "fired": false
+    }
+  },
+  "attack_fired": true,
+  "delta_asr": 0.9400000000000001,
+  "source_attack_report": "/workspace/outputs/reports/backdoor_detection_phrase_p0.05_s42.json",
+  "results": [
+    {
+      "detector": "rap",
+      "trigger": "phrase",
+      "poison_rate": 0.05,
+      "attack_fired": true,
+      "n": 800,
+      "base_rate": 0.5,
+      "threshold_poisoned": 0.0006970964539798619,
+      "threshold_control": 2.38990092292779e-05,
+      "fpr_budget": 0.05,
+      "detection_rate": 0.0,
+      "precision": 0.0,
+      "f1": 0.0,
+      "fpr": 0.02,
+      "roc_auc": 0.975878125,
+      "pr_auc": 0.9137730154661327,
+      "ctrl_cleanFT_triggered": 0.0325,
+      "ctrl_cleanFT_clean": 0.025,
+      "ctrl_poisonedFT_clean": 0.02,
+      "seconds": 333.7466142177582,
+      "pr_auc_lift": 1.8275460309322653
+    }
+  ],
+  "wall_clock_s": 384.2999942302704,
+  "rap_numerical_version": "rap-v2-fp32-master-row",
+  "code_hashes": {
+    "rap.py": "2d29b378a17eec36486cbea986e2a540865696d96ce04ab830c220fa879f2eaa",
+    "_verbalizer_common.py": "53660e76af59a1b80724d3e2f771af6e8730a964d3870435d47f809a29d4f935"
+  },
+  "runtime_dtype": {
+    "embedding": "torch.bfloat16"
+  },
+  "notes": "RAP score is a class-probability drop under a teacher-forced verbalizer, adapting the paper's BERT-softmax statistic to this project's causal LM (see src/aiforensics/detectors/rap.py). Attack gate and evaluation/calibration pools are reused exactly from Minseok's original runner; this launcher never trains. Numerical implementation: rap-v2-fp32-master-row -- fit()'s per-step row update and norm rescale run in an FP32 master copy of the row, cast to the model's own dtype only when installed for a forward pass (replacing a prior BF16-only update/rescale confirmed, on live audit, to lose a measurable fraction of the computed update to BF16 rounding -- see rap.py's module docstring, 'row-update precision'). No report predating this tag used the FP32 master row."
+}

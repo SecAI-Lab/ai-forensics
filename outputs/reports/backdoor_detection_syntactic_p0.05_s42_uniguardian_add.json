@@ -1,0 +1,68 @@
+{
+  "config": {
+    "trigger": "syntactic",
+    "poison_rate": 0.05,
+    "poison_mode": "edit",
+    "target_label": 1,
+    "model": "qwen3-1.7b",
+    "epochs": 3.0,
+    "lr": 0.0001,
+    "batch_size": 8,
+    "detectors": [
+      "uniguardian"
+    ],
+    "tag": "_uniguardian_add",
+    "layer": -1,
+    "target_fpr": 0.05,
+    "eval_cap": 400,
+    "dataset": "sst2",
+    "seed": 42
+  },
+  "attack": {
+    "poisoned": {
+      "clean_accuracy": 0.9456342668863262,
+      "asr": 0.9175,
+      "clean_n": 1821,
+      "asr_n": 400,
+      "target_label": 1,
+      "baseline_target_rate": 0.07,
+      "fired": true
+    },
+    "control": {
+      "clean_accuracy": 0.9522240527182867,
+      "asr": 0.175,
+      "clean_n": 1821,
+      "asr_n": 400,
+      "target_label": 1,
+      "baseline_target_rate": 0.0625,
+      "fired": false
+    }
+  },
+  "attack_fired": true,
+  "delta_asr": 0.7424999999999999,
+  "results": [
+    {
+      "detector": "uniguardian",
+      "trigger": "syntactic",
+      "poison_rate": 0.05,
+      "attack_fired": true,
+      "n": 800,
+      "base_rate": 0.5,
+      "threshold_poisoned": 3.975765524251905,
+      "threshold_control": 3.6726312302551443,
+      "fpr_budget": 0.05,
+      "detection_rate": 0.015,
+      "precision": 0.3,
+      "f1": 0.02857142857142857,
+      "fpr": 0.035,
+      "roc_auc": 0.45675,
+      "pr_auc": 0.45590134832951174,
+      "ctrl_cleanFT_triggered": 0.06,
+      "ctrl_cleanFT_clean": 0.0425,
+      "ctrl_poisonedFT_clean": 0.035,
+      "seconds": 2632.212084054947,
+      "pr_auc_lift": 0.9118026966590235
+    }
+  ],
+  "wall_clock_s": 2701.320228099823
+}
